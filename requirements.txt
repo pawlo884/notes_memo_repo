@@ -1,0 +1,12 @@
+openai
+qdrant_client
+pydub
+streamlit
+streamlit-audiorecorder
+python-dotenv
+moviepy
+imageio-ffmpeg
+boto3
+psycopg2-binary
+numpy
+yt-dlp
