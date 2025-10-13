@@ -217,9 +217,9 @@ def transcribe_audio(audio_bytes, include_timestamps=False):
             "text": transcript.text,
             "segments": [
                 {
-                    "start": seg.get("start", 0),
-                    "end": seg.get("end", 0),
-                    "text": seg.get("text", "")
+                    "start": getattr(seg, "start", 0),
+                    "end": getattr(seg, "end", 0),
+                    "text": getattr(seg, "text", "")
                 }
                 for seg in (transcript.segments or [])
             ]
