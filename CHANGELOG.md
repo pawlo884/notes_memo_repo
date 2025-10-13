@@ -1,5 +1,21 @@
 # Changelog - Audio & Video Notes App
 
+## 🔧 Hotfix 3.0.1 - Python 3.11 Compatibility
+
+### 🐛 Poprawki
+
+- ✅ **Wymuszenie Python 3.11** - dodano `runtime.txt` i `python-version==3.11` w requirements.txt
+- ✅ **Kompatybilność z pydub** - Python 3.13+ ma problemy z modułem `pyaudioop`
+- ✅ **Streamlit Cloud** - aplikacja będzie używać Python 3.11 na serwerze
+
+### 📝 Techniczne
+
+- Dodano `runtime.txt` z `python-3.11.9`
+- Zaktualizowano `requirements.txt` z wymuszeniem wersji Python
+- Rozwiązano błąd: `import pyaudioop as audioop` w Python 3.13+
+
+---
+
 ## 🚀 Wersja 3.0 - PostgreSQL & Rozszerzone formaty ⭐ NOWOŚĆ
 
 ### ✨ Nowe funkcjonalności

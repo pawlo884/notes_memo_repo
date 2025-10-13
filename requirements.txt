@@ -1,6 +1,4 @@
-# Wymuszenie Python 3.11 (Python 3.13+ ma problemy z pydub)
-python-version==3.11
-
+# Python 3.11 określony w runtime.txt (Python 3.13+ ma problemy z pydub)
 openai
 qdrant_client
 pydub
