@@ -19,11 +19,43 @@ from psycopg2.extras import RealDictCursor
 import json
 import yt_dlp
 import re
+import traceback
+import sys
 
 
 # zmienne globalne
 
 env = dotenv_values(".env")
+
+
+def log_error(error, context=""):
+    """Loguje błąd z kontekstem i pełnym traceback"""
+    error_msg = f"🚨 BŁĄD: {str(error)}"
+    if context:
+        error_msg = f"🚨 BŁĄD w {context}: {str(error)}"
+
+    # Wyświetl w Streamlit
+    st.error(error_msg)
+
+    # Pokaż szczegóły w expanderze
+    with st.expander("🔍 Szczegóły błędu (kliknij aby rozwinąć)"):
+        st.code(traceback.format_exc(), language="python")
+
+        # Dodatkowe informacje
+        st.write("**Typ błędu:**", type(error).__name__)
+        st.write("**Plik:**", sys.exc_info()[2].tb_frame.f_code.co_filename)
+        st.write("**Linia:**", sys.exc_info()[2].tb_lineno)
+
+    # Zapisz do logów (w trybie deweloperskim)
+    if st.session_state.get("debug_mode", False):
+        print(f"DEBUG ERROR: {error_msg}")
+        print(traceback.format_exc())
+
+
+def show_error_toast(error_msg):
+    """Pokazuje błąd jako toast (szybko znika)"""
+    st.toast(f"⚠️ {error_msg}", icon="⚠️")
+
 
 try:
     if "OPENAI_API_KEY" in st.secrets:
@@ -76,6 +108,19 @@ st.set_page_config(page_title=title,
                    page_icon=":microphone:", layout="centered")
 
 st.title(title)
+
+# Tryb debugowania (w prawym górnym rogu)
+col1, col2 = st.columns([4, 1])
+with col1:
+    pass
+with col2:
+    debug_mode = st.checkbox(
+        "🐛 Debug", help="Włącza szczegółowe logowanie błędów")
+    if debug_mode:
+        st.session_state["debug_mode"] = True
+    else:
+        st.session_state["debug_mode"] = False
+
 add_tab, search_tab, browse_tab, manage_categories_tab = st.tabs(
     ["Dodaj notatkę", "Szukaj notatki", "Przeglądaj notatki", "Zarządzaj kategoriami"])
 
@@ -147,7 +192,7 @@ def upload_file_to_spaces(file_bytes, file_extension, content_type):
         url = f'https://{env["DO_SPACES_BUCKET"]}.{env["DO_SPACES_REGION"]}.digitaloceanspaces.com/{filename}'
         return url
     except Exception as e:
-        st.error(f"Błąd podczas uploadu do Spaces: {str(e)}")
+        log_error(e, "upload do Spaces")
         return None
 
 
@@ -168,7 +213,7 @@ def get_file_from_spaces_url(url):
         )
         return response['Body'].read()
     except Exception as e:
-        st.error(f"Błąd podczas pobierania z Spaces: {str(e)}")
+        log_error(e, "pobieranie z Spaces")
         return None
 
 
@@ -189,7 +234,7 @@ def delete_file_from_spaces(url: str) -> bool:
         )
         return True
     except Exception as e:
-        st.warning(f"⚠️ Nie udało się usunąć pliku ze Spaces: {str(e)}")
+        log_error(e, "usuwanie pliku ze Spaces")
         return False
 
 

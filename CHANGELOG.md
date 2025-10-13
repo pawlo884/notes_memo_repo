@@ -1,13 +1,22 @@
 # Changelog - Audio & Video Notes App
 
-## 🔧 Hotfix 3.0.1 - Python 3.11 Compatibility
+## 🔧 Hotfix 3.0.1 - Python 3.11 Compatibility + Debug System
 
 ### 🐛 Poprawki
 
 - ✅ **WYMAGANY Python 3.11** - dodano `runtime.txt` z `3.11.9`
-- ✅ **Kompatybilność z pydub** - Python 3.13+ ma problemy z modułem `pyaudioop` 
+- ✅ **Kompatybilność z pydub** - Python 3.13+ ma problemy z modułem `pyaudioop`
 - ✅ **Streamlit Cloud** - aplikacja WYMAGA Python 3.11 (nie 3.13+)
 - ✅ **Naprawiono błąd instalacji** - usunięto nieprawidłowy `python-version==3.11` z requirements.txt
+- ✅ **Naprawiono błąd Instagram** - `TranscriptionSegment.get()` → `getattr(seg, ...)`
+
+### 🐛 Nowy system debugowania
+
+- ✅ **Tryb Debug** - checkbox "🐛 Debug" w prawym górnym rogu
+- ✅ **Szczegółowe logowanie** - pełny traceback błędów z kontekstem
+- ✅ **Rozwijane szczegóły** - kliknij "🔍 Szczegóły błędu" aby zobaczyć więcej
+- ✅ **Toast notifications** - szybkie powiadomienia o błędach
+- ✅ **Logi w konsoli** - w trybie debug błędy zapisywane do konsoli
 
 ### 📝 Techniczne
 
