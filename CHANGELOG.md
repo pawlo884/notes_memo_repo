@@ -4,15 +4,16 @@
 
 ### 🐛 Poprawki
 
-- ✅ **Wymuszenie Python 3.11** - dodano `runtime.txt` i `python-version==3.11` w requirements.txt
-- ✅ **Kompatybilność z pydub** - Python 3.13+ ma problemy z modułem `pyaudioop`
-- ✅ **Streamlit Cloud** - aplikacja będzie używać Python 3.11 na serwerze
+- ✅ **WYMAGANY Python 3.11** - dodano `runtime.txt` z `3.11.9`
+- ✅ **Kompatybilność z pydub** - Python 3.13+ ma problemy z modułem `pyaudioop` 
+- ✅ **Streamlit Cloud** - aplikacja WYMAGA Python 3.11 (nie 3.13+)
+- ✅ **Naprawiono błąd instalacji** - usunięto nieprawidłowy `python-version==3.11` z requirements.txt
 
 ### 📝 Techniczne
 
-- Dodano `runtime.txt` z `python-3.11.9`
-- Zaktualizowano `requirements.txt` z wymuszeniem wersji Python
+- Dodano `runtime.txt` z `3.11.9` (Streamlit Cloud używa tego do określenia wersji)
 - Rozwiązano błąd: `import pyaudioop as audioop` w Python 3.13+
+- **WAŻNE**: Jeśli Streamlit Cloud nadal używa 3.13, usuń aplikację i wdróż ponownie z Python 3.11
 
 ---
 

@@ -1,4 +1,5 @@
-# Python 3.11 określony w runtime.txt (Python 3.13+ ma problemy z pydub)
+# WYMAGANY: Python 3.11 (określony w runtime.txt)
+# Python 3.13+ ma problemy z pydub (brak pyaudioop)
 openai
 qdrant_client
 pydub
