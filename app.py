@@ -21,11 +21,17 @@ import yt_dlp
 import re
 import traceback
 import sys
+import pickle
+import hashlib
+import time
 
 
 # zmienne globalne
 
 env = dotenv_values(".env")
+
+# Ścieżka do pliku z trwałymi sesjami
+SESSION_FILE = ".streamlit_session.pkl"
 
 
 def log_error(error, context=""):
@@ -55,6 +61,60 @@ def log_error(error, context=""):
 def show_error_toast(error_msg):
     """Pokazuje błąd jako toast (szybko znika)"""
     st.toast(f"⚠️ {error_msg}", icon="⚠️")
+
+
+def save_persistent_session(username, remember_me=True):
+    """Zapisuje trwałą sesję do pliku"""
+    try:
+        session_data = {
+            "username": username,
+            "login_time": time.time(),
+            "remember_me": remember_me,
+            "session_id": hashlib.md5(f"{username}{time.time()}".encode()).hexdigest()[:16]
+        }
+        
+        with open(SESSION_FILE, 'wb') as f:
+            pickle.dump(session_data, f)
+        return True
+    except Exception as e:
+        log_error(e, "zapisywanie trwałej sesji")
+        return False
+
+
+def load_persistent_session():
+    """Ładuje trwałą sesję z pliku"""
+    try:
+        if not os.path.exists(SESSION_FILE):
+            return None
+            
+        with open(SESSION_FILE, 'rb') as f:
+            session_data = pickle.load(f)
+            
+        # Sprawdź czy sesja nie wygasła (30 dni)
+        current_time = time.time()
+        session_duration = 30 * 24 * 60 * 60  # 30 dni w sekundach
+        
+        if current_time - session_data.get("login_time", 0) < session_duration:
+            return session_data
+        else:
+            # Sesja wygasła, usuń plik
+            delete_persistent_session()
+            return None
+            
+    except Exception as e:
+        log_error(e, "ładowanie trwałej sesji")
+        return None
+
+
+def delete_persistent_session():
+    """Usuwa plik z trwałą sesją"""
+    try:
+        if os.path.exists(SESSION_FILE):
+            os.remove(SESSION_FILE)
+        return True
+    except Exception as e:
+        log_error(e, "usuwanie trwałej sesji")
+        return False
 
 
 try:
@@ -1253,7 +1313,7 @@ def rename_category(category_id, new_name):
 
 # MAIN
 
-# System logowania (prosty, bez hasha)
+# System logowania z funkcjonalnością "Remember Me"
 def check_password():
     """Sprawdza czy użytkownik jest zalogowany"""
 
@@ -1270,16 +1330,36 @@ def check_password():
         with st.form("login_form"):
             username = st.text_input("Login")
             password = st.text_input("Hasło", type="password")
+            remember_me = st.checkbox("Zapamiętaj mnie", help="Zostaniesz zalogowany automatycznie przy następnej wizycie")
             submit = st.form_submit_button("Zaloguj się", type="primary")
 
             if submit:
                 if username == env["APP_USERNAME"] and password == env["APP_PASSWORD"]:
                     st.session_state["authenticated"] = True
                     st.session_state["username"] = username
+                    
+                    # Jeśli użytkownik wybrał "Zapamiętaj mnie", zapisz trwałą sesję
+                    if remember_me:
+                        save_persistent_session(username, remember_me=True)
+                        st.session_state["remember_me"] = True
+                    
                     st.success("✅ Zalogowano pomyślnie!")
+                    if remember_me:
+                        st.info("💾 Zostaniesz zalogowany automatycznie przy następnej wizycie")
                     st.rerun()
                 else:
                     st.error("❌ Nieprawidłowy login lub hasło")
+
+    # Sprawdź czy użytkownik ma trwałą sesję (Remember Me)
+    if not st.session_state.get("authenticated", False):
+        # Sprawdź czy istnieje trwała sesja w pliku
+        persistent_session = load_persistent_session()
+        if persistent_session and persistent_session.get("remember_me"):
+            # Automatyczne logowanie
+            st.session_state["authenticated"] = True
+            st.session_state["username"] = persistent_session.get("username")
+            st.session_state["remember_me"] = True
+            st.info("🔄 Automatyczne logowanie z zapamiętanej sesji")
 
     # Sprawdź czy użytkownik jest zalogowany
     if not st.session_state.get("authenticated", False):
@@ -1289,9 +1369,18 @@ def check_password():
     # Przycisk wylogowania w sidebar
     with st.sidebar:
         st.write(f"👤 Zalogowany jako: **{st.session_state.get('username')}**")
+        
+        # Pokaż informację o trwałej sesji
+        if st.session_state.get("remember_me"):
+            st.caption("💾 Trwała sesja aktywna")
+        
         if st.button("🚪 Wyloguj się"):
+            # Usuń wszystkie dane sesji
             st.session_state["authenticated"] = False
             st.session_state["username"] = None
+            st.session_state["remember_me"] = False
+            # Usuń trwałą sesję z pliku
+            delete_persistent_session()
             st.rerun()
 
     return True

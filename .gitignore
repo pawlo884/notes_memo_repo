@@ -1,3 +1,4 @@
 .venv/
 .env
 cursor_gdzie_s_credentiale_do_postgresq.md
+.streamlit_session.pkl
