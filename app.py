@@ -66,7 +66,7 @@ EMBEDDING_MODEL = "text-embedding-3-large"
 
 EMBEDDING_DIM = 1536
 
-QDRANT_COLLECTION_NAME = "notes"
+QDRANT_COLLECTION_NAME = "app_note_v1"
 
 title = "Audio & Video Notes"
 
@@ -89,19 +89,34 @@ def get_openai_client():
 @st.cache_resource
 def get_spaces_client():
     """Tworzy klienta boto3 dla DigitalOcean Spaces"""
-    if not all(key in env for key in ["DO_SPACES_KEY", "DO_SPACES_SECRET", "DO_SPACES_REGION"]):
+    required_keys = ["DO_SPACES_KEY", "DO_SPACES_SECRET",
+                     "DO_SPACES_REGION", "DO_SPACES_BUCKET"]
+
+    # Sprawdź czy wszystkie klucze istnieją
+    missing_keys = [key for key in required_keys if key not in env]
+    if missing_keys:
         return None
 
-    session = boto3.session.Session()
-    client = session.client(
-        's3',
-        region_name=env["DO_SPACES_REGION"],
-        endpoint_url=f'https://{env["DO_SPACES_REGION"]}.digitaloceanspaces.com',
-        aws_access_key_id=env["DO_SPACES_KEY"],
-        aws_secret_access_key=env["DO_SPACES_SECRET"],
-        config=Config(signature_version='s3v4')
-    )
-    return client
+    # Sprawdź czy klucze nie są puste
+    empty_keys = [key for key in required_keys if not str(
+        env.get(key, "")).strip()]
+    if empty_keys:
+        return None
+
+    try:
+        session = boto3.session.Session()
+        client = session.client(
+            's3',
+            region_name=env["DO_SPACES_REGION"],
+            endpoint_url=f'https://{env["DO_SPACES_REGION"]}.digitaloceanspaces.com',
+            aws_access_key_id=env["DO_SPACES_KEY"],
+            aws_secret_access_key=env["DO_SPACES_SECRET"],
+            config=Config(signature_version='s3v4')
+        )
+        return client
+    except Exception as e:
+        st.warning(f"⚠️ DigitalOcean Spaces niedostępne: {str(e)}")
+        return None
 
 
 def upload_file_to_spaces(file_bytes, file_extension, content_type):
@@ -113,7 +128,7 @@ def upload_file_to_spaces(file_bytes, file_extension, content_type):
 
     # Generuj unikalną nazwę pliku
     file_id = str(uuid.uuid4())
-    filename = f"notes/{file_id}.{file_extension}"
+    filename = f"app_note_v1/{file_id}.{file_extension}"
 
     try:
         # Upload do Spaces
@@ -155,6 +170,27 @@ def get_file_from_spaces_url(url):
     except Exception as e:
         st.error(f"Błąd podczas pobierania z Spaces: {str(e)}")
         return None
+
+
+def delete_file_from_spaces(url: str) -> bool:
+    """Usuwa plik w Spaces na podstawie pełnego URL. Zwraca True, jeśli sukces."""
+    spaces_client = get_spaces_client()
+
+    if not spaces_client or not url:
+        return False
+
+    try:
+        # Key to część ścieżki po domenie *.digitaloceanspaces.com/
+        key = url.split('.digitaloceanspaces.com/')[-1]
+
+        spaces_client.delete_object(
+            Bucket=env["DO_SPACES_BUCKET"],
+            Key=key
+        )
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Nie udało się usunąć pliku ze Spaces: {str(e)}")
+        return False
 
 
 def transcribe_audio(audio_bytes, include_timestamps=False):
@@ -913,7 +949,7 @@ def get_all_categories() -> list[str]:
 
 
 def delete_note(note_id, qdrant_id):
-    """Usuwa notatkę z PostgreSQL i Qdrant"""
+    """Usuwa notatkę z PostgreSQL, Qdrant oraz plik z DigitalOcean Spaces (jeśli istnieje)."""
     conn = get_postgres_connection()
 
     # Jeśli brak PostgreSQL, usuń tylko z Qdrant
@@ -929,9 +965,19 @@ def delete_note(note_id, qdrant_id):
             st.error(f"Błąd usuwania z Qdrant: {str(e)}")
             return False
 
-    # Usuń z PostgreSQL i Qdrant
+    # Usuń z PostgreSQL (zwróć media_url, jeśli istnieje) i Qdrant
     try:
-        with conn.cursor() as cur:
+        media_url = None
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Pobierz URL pliku przed usunięciem rekordu
+            try:
+                cur.execute(
+                    "SELECT media_url FROM notes WHERE id = %s", (note_id,))
+                row = cur.fetchone()
+                media_url = (row or {}).get("media_url")
+            except Exception:
+                media_url = None
+
             cur.execute("DELETE FROM notes WHERE id = %s", (note_id,))
         conn.commit()
 
@@ -941,6 +987,10 @@ def delete_note(note_id, qdrant_id):
             collection_name=QDRANT_COLLECTION_NAME,
             points_selector=[qdrant_id]
         )
+
+        # Usuń plik ze Spaces, jeśli mamy URL
+        if media_url:
+            delete_file_from_spaces(media_url)
 
         return True
     except Exception as e:
@@ -1246,8 +1296,8 @@ with add_tab:
     if source_option == "🎤 Nagraj audio":
         st.session_state["source_type"] = "audio"
         note_audio = audiorecorder(
-            start_prompt="Nagraj notatkę",
-            stop_prompt="Zatrzymaj nagrywanie",)
+            start_prompt="🔴 Nagraj notatkę",
+            stop_prompt="⏹️ Zatrzymaj nagrywanie",)
 
         if note_audio:
             audio = BytesIO()
@@ -1261,6 +1311,18 @@ with add_tab:
                 st.session_state["media_file_bytes"] = st.session_state["note_audio_bytes"]
                 st.session_state["media_file_extension"] = "mp3"
                 st.session_state["media_content_type"] = "audio/mp3"
+
+            # Wyświetl informację o długości nagrania
+            try:
+                from pydub import AudioSegment
+                audio_segment = AudioSegment.from_mp3(
+                    BytesIO(st.session_state["note_audio_bytes"]))
+                duration_seconds = len(audio_segment) / 1000.0
+                minutes = int(duration_seconds // 60)
+                seconds = int(duration_seconds % 60)
+                st.info(f"⏱️ Długość nagrania: {minutes}:{seconds:02d}")
+            except Exception:
+                pass
 
             st.audio(st.session_state["note_audio_bytes"], format="audio/mp3")
 
@@ -1543,6 +1605,9 @@ with add_tab:
                 if media_url:
                     media_type = st.session_state.get("media_content_type")
                     st.success("✅ Plik zapisany w Spaces")
+                else:
+                    st.warning(
+                        "⚠️ Nie udało się zapisać pliku w Spaces, ale notatka zostanie zapisana bez załącznika")
 
         # Zapisz notatkę do bazy
         add_note_to_db(
