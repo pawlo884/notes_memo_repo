@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS notes (
     id SERIAL PRIMARY KEY,
     text TEXT NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    source_type VARCHAR(20) DEFAULT 'audio' CHECK (source_type IN ('audio', 'video', 'text')),
+    source_type VARCHAR(20) DEFAULT 'audio' CHECK (source_type IN ('audio', 'video', 'text', 'instagram')),
     media_url TEXT,
     media_type VARCHAR(50),
     qdrant_id INTEGER,  -- ID punktu w Qdrant

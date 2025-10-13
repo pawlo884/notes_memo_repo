@@ -431,10 +431,22 @@ def init_postgres_tables():
             with open("init_db.sql", "r", encoding="utf-8") as f:
                 sql = f.read()
                 cur.execute(sql)
+
+            # Aktualizuj constraint jeśli istnieje (dodaj 'instagram')
+            try:
+                cur.execute("""
+                    ALTER TABLE notes DROP CONSTRAINT IF EXISTS notes_source_type_check;
+                    ALTER TABLE notes ADD CONSTRAINT notes_source_type_check 
+                    CHECK (source_type IN ('audio', 'video', 'text', 'instagram'));
+                """)
+            except Exception:
+                # Ignoruj błąd jeśli constraint nie istnieje
+                pass
+
         conn.commit()
         return True
     except Exception as e:
-        st.error(f"Błąd inicjalizacji tabel: {str(e)}")
+        log_error(e, "inicjalizacja tabel PostgreSQL")
         conn.rollback()
         return False
     finally:
