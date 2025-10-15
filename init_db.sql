@@ -5,11 +5,12 @@ CREATE TABLE IF NOT EXISTS notes (
     id SERIAL PRIMARY KEY,
     text TEXT NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    source_type VARCHAR(20) DEFAULT 'audio' CHECK (source_type IN ('audio', 'video', 'text', 'instagram')),
+    source_type VARCHAR(20) DEFAULT 'audio' CHECK (source_type IN ('audio', 'video', 'text', 'instagram', 'image')),
     media_url TEXT,
     media_type VARCHAR(50),
     qdrant_id INTEGER,  -- ID punktu w Qdrant
     timestamps JSONB,  -- Timestampy segmentów z transkrypcji (dla audio/wideo)
+    multiple_images_data JSONB,  -- Dane o wielu obrazkach (dla source_type='image')
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

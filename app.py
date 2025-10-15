@@ -24,6 +24,8 @@ import sys
 import pickle
 import hashlib
 import time
+import pytesseract
+from PIL import Image
 
 
 # zmienne globalne
@@ -435,6 +437,95 @@ def is_instagram_url(url):
     return any(re.search(pattern, url) for pattern in instagram_patterns)
 
 
+def extract_text_from_image(image_bytes):
+    """
+    Ekstraktuje tekst z obrazka używając OCR (Tesseract)
+    
+    Args:
+        image_bytes: bytes - dane obrazka
+        
+    Returns:
+        str - wyekstraktowany tekst
+    """
+    try:
+        # Otwórz obrazek z bytes
+        image = Image.open(BytesIO(image_bytes))
+        
+        # Konwertuj na RGB jeśli potrzeba
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Użyj Tesseract do OCR
+        # Ustaw język na polski + angielski
+        text = pytesseract.image_to_string(image, lang='pol+eng')
+        
+        return text.strip()
+    except Exception as e:
+        raise Exception(f"Błąd podczas ekstrakcji tekstu z obrazka: {str(e)}")
+
+
+def process_multiple_images(image_files):
+    """
+    Przetwarza wiele obrazków jednocześnie
+    
+    Args:
+        image_files: lista plików obrazków z Streamlit
+        
+    Returns:
+        dict: {
+            'combined_text': str - połączony tekst ze wszystkich obrazków,
+            'individual_texts': list - lista tekstów z każdego obrazka,
+            'image_data': list - lista danych obrazków (bytes, nazwa, typ)
+        }
+    """
+    combined_text = ""
+    individual_texts = []
+    image_data = []
+    
+    for i, uploaded_file in enumerate(image_files):
+        try:
+            # Wczytaj dane obrazka
+            image_bytes = uploaded_file.read()
+            file_ext = uploaded_file.name.split('.')[-1].lower()
+            content_type = f"image/{file_ext}"
+            
+            # Zapisz dane obrazka
+            image_data.append({
+                'bytes': image_bytes,
+                'name': uploaded_file.name,
+                'extension': file_ext,
+                'content_type': content_type
+            })
+            
+            # Ekstraktuj tekst
+            with st.spinner(f"Przetwarzam obrazek {i+1}/{len(image_files)}: {uploaded_file.name}"):
+                text = extract_text_from_image(image_bytes)
+                individual_texts.append({
+                    'filename': uploaded_file.name,
+                    'text': text
+                })
+                
+                # Dodaj do połączonego tekstu
+                if text:
+                    combined_text += f"\n\n--- Obrazek {i+1}: {uploaded_file.name} ---\n{text}"
+                else:
+                    combined_text += f"\n\n--- Obrazek {i+1}: {uploaded_file.name} ---\n[Brak tekstu do odczytania]"
+                    
+        except Exception as e:
+            st.error(f"Błąd przetwarzania obrazka {uploaded_file.name}: {str(e)}")
+            individual_texts.append({
+                'filename': uploaded_file.name,
+                'text': f"[BŁĄD: {str(e)}]"
+            })
+            combined_text += f"\n\n--- Obrazek {i+1}: {uploaded_file.name} ---\n[BŁĄD: {str(e)}]"
+    
+    return {
+        'combined_text': combined_text.strip(),
+        'individual_texts': individual_texts,
+        'image_data': image_data
+    }
+
+
 @st.cache_resource
 def get_qdrant_client():
     return QdrantClient(
@@ -492,12 +583,12 @@ def init_postgres_tables():
                 sql = f.read()
                 cur.execute(sql)
 
-            # Aktualizuj constraint jeśli istnieje (dodaj 'instagram')
+            # Aktualizuj constraint jeśli istnieje (dodaj 'instagram' i 'image')
             try:
                 cur.execute("""
                     ALTER TABLE notes DROP CONSTRAINT IF EXISTS notes_source_type_check;
                     ALTER TABLE notes ADD CONSTRAINT notes_source_type_check 
-                    CHECK (source_type IN ('audio', 'video', 'text', 'instagram'));
+                    CHECK (source_type IN ('audio', 'video', 'text', 'instagram', 'image'));
                 """)
             except Exception:
                 # Ignoruj błąd jeśli constraint nie istnieje
@@ -711,11 +802,12 @@ def highlight_text_fallback(text, query):
     return highlighted_text
 
 
-def add_note_to_db(note_text, categories=None, source_type="audio", media_url=None, media_type=None, timestamps=None):
+def add_note_to_db(note_text, categories=None, source_type="audio", media_url=None, media_type=None, timestamps=None, multiple_images_data=None):
     """Zapisuje notatkę do PostgreSQL i Qdrant
 
     Args:
         timestamps: Lista segmentów z timestampami {'start': float, 'end': float, 'text': str}
+        multiple_images_data: Lista danych obrazków dla source_type='image'
     """
     conn = get_postgres_connection()
 
@@ -735,6 +827,7 @@ def add_note_to_db(note_text, categories=None, source_type="audio", media_url=No
             "media_url": media_url,
             "media_type": media_type,
             "timestamps": timestamps,  # Timestampy segmentów
+            "multiple_images_data": multiple_images_data,  # Dane o wielu obrazkach
         }
         qdrant_client.upsert(
             collection_name=QDRANT_COLLECTION_NAME,
@@ -761,10 +854,10 @@ def add_note_to_db(note_text, categories=None, source_type="audio", media_url=No
 
             # 2. Zapisz do PostgreSQL
             cur.execute("""
-                INSERT INTO notes (text, source_type, media_url, media_type, qdrant_id, timestamps)
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                INSERT INTO notes (text, source_type, media_url, media_type, qdrant_id, timestamps, multiple_images_data)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
                 RETURNING id
-            """, (note_text, source_type, media_url, media_type, qdrant_id, json.dumps(timestamps) if timestamps else None))
+            """, (note_text, source_type, media_url, media_type, qdrant_id, json.dumps(timestamps) if timestamps else None, json.dumps(multiple_images_data) if multiple_images_data else None))
 
             note_id = cur.fetchone()["id"]
 
@@ -800,6 +893,7 @@ def add_note_to_db(note_text, categories=None, source_type="audio", media_url=No
                 "media_type": media_type,
                 "postgres_id": note_id,
                 "timestamps": timestamps,  # Timestampy segmentów
+                "multiple_images_data": multiple_images_data,  # Dane o wielu obrazkach
             }
 
             qdrant_client.upsert(
@@ -857,6 +951,8 @@ def list_notes_from_db(search_query=None, category_filter=None, date_from=None, 
                         "media_type": record.payload.get("media_type"),
                         # Timestampy segmentów
                         "timestamps": record.payload.get("timestamps"),
+                        # Dane o obrazkach
+                        "multiple_images_data": record.payload.get("multiple_images_data"),
                     })
             result.sort(key=lambda x: x["timestamp"], reverse=True)
             return result
@@ -876,6 +972,8 @@ def list_notes_from_db(search_query=None, category_filter=None, date_from=None, 
                         "media_type": record.payload.get("media_type"),
                         # Timestampy segmentów
                         "timestamps": record.payload.get("timestamps"),
+                        # Dane o obrazkach
+                        "multiple_images_data": record.payload.get("multiple_images_data"),
                     })
             return result
 
@@ -894,6 +992,7 @@ def list_notes_from_db(search_query=None, category_filter=None, date_from=None, 
                         n.media_type,
                         n.qdrant_id,
                         n.timestamps,
+                        n.multiple_images_data,
                         COALESCE(
                             json_agg(c.name) FILTER (WHERE c.name IS NOT NULL),
                             '[]'::json
@@ -939,6 +1038,8 @@ def list_notes_from_db(search_query=None, category_filter=None, date_from=None, 
                         "media_type": row["media_type"],
                         # JSONB z timestampami
                         "timestamps": row["timestamps"],
+                        # Dane o obrazkach
+                        "multiple_images_data": row.get("multiple_images_data"),
                     })
                 return result
 
@@ -971,6 +1072,7 @@ def list_notes_from_db(search_query=None, category_filter=None, date_from=None, 
                         n.media_type,
                         n.qdrant_id,
                         n.timestamps,
+                        n.multiple_images_data,
                         COALESCE(
                             json_agg(c.name) FILTER (WHERE c.name IS NOT NULL),
                             '[]'::json
@@ -1020,6 +1122,8 @@ def list_notes_from_db(search_query=None, category_filter=None, date_from=None, 
                         "media_type": row["media_type"],
                         # JSONB z timestampami
                         "timestamps": row["timestamps"],
+                        # Dane o obrazkach
+                        "multiple_images_data": row.get("multiple_images_data"),
                     })
 
                 # Sortuj wg score
@@ -1433,7 +1537,7 @@ with add_tab:
     source_option = st.radio(
         "Źródło",
         ["🎤 Nagraj audio", "📁 Upload audio/wideo",
-            "📱 Pobierz z Instagram", "📝 Napisz tekst"],
+            "📱 Pobierz z Instagram", "🖼️ Upload obrazków", "📝 Napisz tekst"],
         horizontal=True
     )
 
@@ -1571,6 +1675,103 @@ with add_tab:
 
             else:
                 st.error(f"Nieobsługiwany format pliku: {file_ext}")
+
+    elif source_option == "🖼️ Upload obrazków":
+        st.session_state["source_type"] = "image"
+        
+        # Upload wielu obrazków
+        uploaded_images = st.file_uploader(
+            "Wybierz obrazki (możesz wybrać wiele)",
+            type=["png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"],
+            accept_multiple_files=True,
+            help="Obsługiwane formaty: PNG, JPG, JPEG, GIF, BMP, TIFF, WEBP"
+        )
+        
+        if uploaded_images:
+            st.write(f"📸 Wybrano **{len(uploaded_images)}** obrazków")
+            
+            # Pokaż podgląd obrazków
+            if len(uploaded_images) <= 6:  # Pokaż wszystkie jeśli mało
+                cols = st.columns(min(len(uploaded_images), 3))
+                for i, img in enumerate(uploaded_images):
+                    with cols[i % 3]:
+                        st.image(img, caption=img.name, use_column_width=True)
+            else:  # Pokaż tylko pierwsze 6
+                st.write("**Podgląd pierwszych 6 obrazków:**")
+                cols = st.columns(3)
+                for i, img in enumerate(uploaded_images[:6]):
+                    with cols[i % 3]:
+                        st.image(img, caption=img.name, use_column_width=True)
+                st.info(f"... i {len(uploaded_images) - 6} więcej")
+            
+            # Przetwarzanie obrazków
+            if st.button("🔍 Odczytać tekst z obrazków", type="primary"):
+                if len(uploaded_images) == 1:
+                    # Pojedynczy obrazek
+                    with st.spinner("Przetwarzam obrazek..."):
+                        try:
+                            image_bytes = uploaded_images[0].read()
+                            st.session_state["media_file_bytes"] = image_bytes
+                            st.session_state["media_file_extension"] = uploaded_images[0].name.split('.')[-1].lower()
+                            st.session_state["media_content_type"] = f"image/{st.session_state['media_file_extension']}"
+                            
+                            extracted_text = extract_text_from_image(image_bytes)
+                            st.session_state["note_audio_text"] = extracted_text
+                            st.session_state["note_text"] = extracted_text
+                            
+                            if extracted_text:
+                                st.success("✅ Tekst wyekstraktowany pomyślnie!")
+                            else:
+                                st.warning("⚠️ Nie udało się odczytać tekstu z obrazka")
+                                
+                        except Exception as e:
+                            st.error(f"❌ Błąd: {str(e)}")
+                else:
+                    # Wiele obrazków
+                    with st.spinner(f"Przetwarzam {len(uploaded_images)} obrazków..."):
+                        try:
+                            result = process_multiple_images(uploaded_images)
+                            
+                            # Zapisz dane pierwszego obrazka jako główny plik
+                            if result['image_data']:
+                                st.session_state["media_file_bytes"] = result['image_data'][0]['bytes']
+                                st.session_state["media_file_extension"] = result['image_data'][0]['extension']
+                                st.session_state["media_content_type"] = result['image_data'][0]['content_type']
+                            
+                            # Ustaw tekst
+                            st.session_state["note_audio_text"] = result['combined_text']
+                            st.session_state["note_text"] = result['combined_text']
+                            
+                            # Zapisz dane o wszystkich obrazkach
+                            st.session_state["multiple_images_data"] = result['image_data']
+                            st.session_state["individual_texts"] = result['individual_texts']
+                            
+                            st.success(f"✅ Przetworzono {len(uploaded_images)} obrazków!")
+                            
+                        except Exception as e:
+                            st.error(f"❌ Błąd: {str(e)}")
+            
+            # Wyświetl wyekstraktowany tekst
+            if st.session_state.get("note_text"):
+                st.markdown("### 📝 Wyekstraktowany tekst")
+                
+                # Dla wielu obrazków pokaż szczegóły
+                if st.session_state.get("individual_texts") and len(st.session_state["individual_texts"]) > 1:
+                    with st.expander("📋 Zobacz tekst z każdego obrazka osobno"):
+                        for item in st.session_state["individual_texts"]:
+                            st.markdown(f"**{item['filename']}:**")
+                            if item['text']:
+                                st.text_area("", value=item['text'], height=100, key=f"text_{item['filename']}", disabled=True)
+                            else:
+                                st.info("Brak tekstu do odczytania")
+                            st.divider()
+                
+                # Edytowalny tekst
+                st.session_state["note_text"] = st.text_area(
+                    "Edytuj wyekstraktowany tekst",
+                    value=st.session_state["note_text"],
+                    height=300
+                )
 
     elif source_option == "📱 Pobierz z Instagram":
         st.session_state["source_type"] = "instagram"
@@ -1762,8 +1963,8 @@ with add_tab:
             source_type=st.session_state["source_type"],
             media_url=media_url,
             media_type=media_type,
-            timestamps=st.session_state.get(
-                "note_timestamps")  # Timestampy dla wideo/audio
+            timestamps=st.session_state.get("note_timestamps"),  # Timestampy dla wideo/audio
+            multiple_images_data=st.session_state.get("multiple_images_data")  # Dane o obrazkach
         )
         st.toast("Notatka zapisana", icon="🎉")
 
@@ -1773,6 +1974,8 @@ with add_tab:
         st.session_state["note_categories"] = []
         st.session_state["media_file_bytes"] = None
         st.session_state["note_timestamps"] = None  # Wyczyść timestampy
+        st.session_state["multiple_images_data"] = None  # Wyczyść dane o obrazkach
+        st.session_state["individual_texts"] = None  # Wyczyść indywidualne teksty
         st.rerun()
 
 
@@ -1831,7 +2034,7 @@ with search_tab:
                             st.caption(f"📅 {dt.strftime('%Y-%m-%d %H:%M')}")
                     with col2:
                         source_icons = {"audio": "🎤",
-                                        "video": "🎥", "text": "📝"}
+                                        "video": "🎥", "text": "📝", "image": "🖼️", "instagram": "📱"}
                         icon = source_icons.get(
                             note_item.get("source_type", "audio"), "📝")
                         st.caption(
@@ -1863,6 +2066,8 @@ with search_tab:
                             st.audio(note_item["media_url"])
                         elif media_type.startswith("video"):
                             st.video(note_item["media_url"])
+                        elif media_type.startswith("image"):
+                            st.image(note_item["media_url"])
 
                     # Timestampy dla wideo/audio
                     if note_item.get("timestamps") and note_item.get("source_type") in ["video", "audio"]:
@@ -1917,6 +2122,23 @@ with search_tab:
                                 st.session_state[f"editing_{note_key}"] = False
                                 st.rerun()
                     else:
+                        # Wyświetl wiele obrazków jeśli dostępne
+                        if note_item.get("source_type") == "image" and note_item.get("multiple_images_data"):
+                            with st.expander("🖼️ Zobacz wszystkie obrazki"):
+                                images_data = note_item["multiple_images_data"]
+                                if len(images_data) <= 6:
+                                    cols = st.columns(min(len(images_data), 3))
+                                    for i, img_data in enumerate(images_data):
+                                        with cols[i % 3]:
+                                            st.image(img_data["bytes"], caption=img_data["name"], use_column_width=True)
+                                else:
+                                    st.write("**Pierwsze 6 obrazków:**")
+                                    cols = st.columns(3)
+                                    for i, img_data in enumerate(images_data[:6]):
+                                        with cols[i % 3]:
+                                            st.image(img_data["bytes"], caption=img_data["name"], use_column_width=True)
+                                    st.info(f"... i {len(images_data) - 6} więcej")
+                        
                         # Treść notatki z podświetleniem (tylko w wyszukiwaniu)
                         if query:
                             highlighted_text = highlight_text(
@@ -2004,7 +2226,7 @@ with browse_tab:
                             st.caption(f"🕐 {dt.strftime('%H:%M')}")
                     with col2:
                         source_icons = {"audio": "🎤",
-                                        "video": "🎥", "text": "📝"}
+                                        "video": "🎥", "text": "📝", "image": "🖼️", "instagram": "📱"}
                         icon = source_icons.get(
                             note_item.get("source_type", "audio"), "📝")
                         st.caption(
@@ -2028,6 +2250,8 @@ with browse_tab:
                             st.audio(note_item["media_url"])
                         elif media_type.startswith("video"):
                             st.video(note_item["media_url"])
+                        elif media_type.startswith("image"):
+                            st.image(note_item["media_url"])
 
                     # Timestampy dla wideo/audio
                     if note_item.get("timestamps") and note_item.get("source_type") in ["video", "audio"]:
@@ -2082,6 +2306,23 @@ with browse_tab:
                                 st.session_state[f"editing_{note_key}"] = False
                                 st.rerun()
                     else:
+                        # Wyświetl wiele obrazków jeśli dostępne
+                        if note_item.get("source_type") == "image" and note_item.get("multiple_images_data"):
+                            with st.expander("🖼️ Zobacz wszystkie obrazki"):
+                                images_data = note_item["multiple_images_data"]
+                                if len(images_data) <= 6:
+                                    cols = st.columns(min(len(images_data), 3))
+                                    for i, img_data in enumerate(images_data):
+                                        with cols[i % 3]:
+                                            st.image(img_data["bytes"], caption=img_data["name"], use_column_width=True)
+                                else:
+                                    st.write("**Pierwsze 6 obrazków:**")
+                                    cols = st.columns(3)
+                                    for i, img_data in enumerate(images_data[:6]):
+                                        with cols[i % 3]:
+                                            st.image(img_data["bytes"], caption=img_data["name"], use_column_width=True)
+                                    st.info(f"... i {len(images_data) - 6} więcej")
+                        
                         # Treść notatki
                         st.markdown(note_item["text"])
 
