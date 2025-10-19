@@ -196,41 +196,117 @@ with col2:
     else:
         st.session_state["debug_mode"] = False
 
-add_tab, search_tab, browse_tab, manage_categories_tab = st.tabs(
-    ["Dodaj notatkę", "Szukaj notatki", "Przeglądaj notatki", "Zarządzaj kategoriami"])
+add_tab, search_tab, browse_tab, manage_categories_tab, settings_tab = st.tabs(
+    ["Dodaj notatkę", "Szukaj notatki", "Przeglądaj notatki", "Zarządzaj kategoriami", "⚙️ Ustawienia"])
 
 # openai_client = get_openai_client()
 
 
+def get_settings():
+    """Pobiera aktualne ustawienia z session state"""
+    if "settings" not in st.session_state:
+        st.session_state["settings"] = {
+            "openai_api_key": env.get("OPENAI_API_KEY", ""),
+            "qdrant_url": env.get("QDRANT_URL", ""),
+            "qdrant_api_key": env.get("QDRANT_API_KEY", ""),
+            "postgres_host": env.get("POSTGRES_HOST", ""),
+            "postgres_port": env.get("POSTGRES_PORT", "5432"),
+            "postgres_db": env.get("POSTGRES_DB", ""),
+            "postgres_user": env.get("POSTGRES_USER", ""),
+            "postgres_password": env.get("POSTGRES_PASSWORD", ""),
+            "postgres_sslmode": env.get("POSTGRES_SSLMODE", "require"),
+            "do_spaces_key": env.get("DO_SPACES_KEY", ""),
+            "do_spaces_secret": env.get("DO_SPACES_SECRET", ""),
+            "do_spaces_region": env.get("DO_SPACES_REGION", ""),
+            "do_spaces_bucket": env.get("DO_SPACES_BUCKET", ""),
+        }
+    return st.session_state["settings"]
+
+
+def save_settings(new_settings):
+    """Zapisuje nowe ustawienia do session state i aktualizuje env"""
+    st.session_state["settings"] = new_settings
+
+    # Aktualizuj globalne env
+    for key, value in new_settings.items():
+        env_key = key.upper()
+        env[env_key] = value
+
+    st.success("✅ Ustawienia zapisane!")
+
+
+def test_openai_connection(api_key):
+    """Testuje połączenie z OpenAI"""
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        # Test prostego zapytania
+        client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=1
+        )
+        return True, "Połączenie OK"
+    except Exception as e:
+        return False, f"Błąd: {str(e)}"
+
+
+def test_qdrant_connection(url, api_key):
+    """Testuje połączenie z Qdrant"""
+    try:
+        from qdrant_client import QdrantClient
+        client = QdrantClient(url=url, api_key=api_key)
+        collections = client.get_collections()
+        return True, f"Połączenie OK - {len(collections.collections)} kolekcji"
+    except Exception as e:
+        return False, f"Błąd: {str(e)}"
+
+
+def test_postgres_connection(host, port, db, user, password, sslmode):
+    """Testuje połączenie z PostgreSQL"""
+    try:
+        import psycopg2
+        conn_string = f"host={host} port={port} dbname={db} user={user} password={password} sslmode={sslmode}"
+        conn = psycopg2.connect(conn_string)
+        conn.close()
+        return True, "Połączenie OK"
+    except Exception as e:
+        return False, f"Błąd: {str(e)}"
+
+
 def get_openai_client():
-    return OpenAI(api_key=st.session_state["openai_api_key"])
+    # Użyj ustawień z panelu użytkownika, jeśli dostępne
+    settings = get_settings()
+    api_key = settings.get("openai_api_key") or env.get("OPENAI_API_KEY")
+    return OpenAI(api_key=api_key)
 
 
 @st.cache_resource
 def get_spaces_client():
     """Tworzy klienta boto3 dla DigitalOcean Spaces"""
-    required_keys = ["DO_SPACES_KEY", "DO_SPACES_SECRET",
-                     "DO_SPACES_REGION", "DO_SPACES_BUCKET"]
+    # Użyj ustawień z panelu użytkownika, jeśli dostępne
+    settings = get_settings()
 
-    # Sprawdź czy wszystkie klucze istnieją
-    missing_keys = [key for key in required_keys if key not in env]
-    if missing_keys:
-        return None
+    spaces_key = settings.get("do_spaces_key") or env.get("DO_SPACES_KEY")
+    spaces_secret = settings.get(
+        "do_spaces_secret") or env.get("DO_SPACES_SECRET")
+    spaces_region = settings.get(
+        "do_spaces_region") or env.get("DO_SPACES_REGION")
+    spaces_bucket = settings.get(
+        "do_spaces_bucket") or env.get("DO_SPACES_BUCKET")
 
-    # Sprawdź czy klucze nie są puste
-    empty_keys = [key for key in required_keys if not str(
-        env.get(key, "")).strip()]
-    if empty_keys:
+    # Sprawdź czy wszystkie klucze są dostępne i nie są puste
+    if not all([spaces_key, spaces_secret, spaces_region, spaces_bucket]):
         return None
 
     try:
         session = boto3.session.Session()
         client = session.client(
             's3',
-            region_name=env["DO_SPACES_REGION"],
-            endpoint_url=f'https://{env["DO_SPACES_REGION"]}.digitaloceanspaces.com',
-            aws_access_key_id=env["DO_SPACES_KEY"],
-            aws_secret_access_key=env["DO_SPACES_SECRET"],
+            region_name=spaces_region,
+            endpoint_url=f'https://{spaces_region}.digitaloceanspaces.com',
+            aws_access_key_id=spaces_key,
+            aws_secret_access_key=spaces_secret,
             config=Config(signature_version='s3v4')
         )
         return client
@@ -243,7 +319,14 @@ def upload_file_to_spaces(file_bytes, file_extension, content_type):
     """Uploaduje plik do DigitalOcean Spaces i zwraca URL"""
     spaces_client = get_spaces_client()
 
-    if not spaces_client or "DO_SPACES_BUCKET" not in env:
+    # Użyj ustawień z panelu użytkownika, jeśli dostępne
+    settings = get_settings()
+    spaces_bucket = settings.get(
+        "do_spaces_bucket") or env.get("DO_SPACES_BUCKET")
+    spaces_region = settings.get(
+        "do_spaces_region") or env.get("DO_SPACES_REGION")
+
+    if not spaces_client or not spaces_bucket or not spaces_region:
         return None
 
     # Generuj unikalną nazwę pliku
@@ -253,7 +336,7 @@ def upload_file_to_spaces(file_bytes, file_extension, content_type):
     try:
         # Upload do Spaces
         spaces_client.put_object(
-            Bucket=env["DO_SPACES_BUCKET"],
+            Bucket=spaces_bucket,
             Key=filename,
             Body=file_bytes,
             ACL='public-read',
@@ -264,7 +347,7 @@ def upload_file_to_spaces(file_bytes, file_extension, content_type):
         )
 
         # Zwróć publiczny URL
-        url = f'https://{env["DO_SPACES_BUCKET"]}.{env["DO_SPACES_REGION"]}.digitaloceanspaces.com/{filename}'
+        url = f'https://{spaces_bucket}.{spaces_region}.digitaloceanspaces.com/{filename}'
         return url
     except Exception as e:
         log_error(e, "upload do Spaces")
@@ -403,13 +486,6 @@ def download_instagram_video(url):
         'sleep_interval': 1,  # Opóźnienie między pobraniami
     }
 
-    # Najpierw spróbuj z cookies z Chrome/Firefox
-    ydl_opts_with_cookies = ydl_opts.copy()
-    try:
-        ydl_opts_with_cookies['cookiesfrombrowser'] = ['chrome', 'firefox']
-    except Exception:
-        pass
-
     # Funkcja pomocnicza do pobierania
     def attempt_download(opts):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -443,30 +519,49 @@ def download_instagram_video(url):
                     'timestamp': info.get('timestamp', None)
                 }
 
-    try:
-        # Najpierw spróbuj z cookies
-        return attempt_download(ydl_opts_with_cookies)
-    except Exception as e:
-        error_msg = str(e)
+    # Spróbuj różne metody pobierania w kolejności
+    attempts = [
+        # Próba 1: Bez cookies (najbardziej niezawodna)
+        ydl_opts,
+        # Próba 2: Tylko Chrome
+        {**ydl_opts, 'cookiesfrombrowser': ('chrome',)},
+        # Próba 3: Tylko Firefox
+        {**ydl_opts, 'cookiesfrombrowser': ('firefox',)}
+    ]
 
-        # Jeśli błąd z keyring, spróbuj bez cookies
-        if "unsupported keyring" in error_msg or "cookiesfrombrowser" in error_msg:
-            try:
-                return attempt_download(ydl_opts)  # Bez cookies
-            except Exception as retry_e:
-                error_msg = str(retry_e)
+    last_error = None
 
-        # Sprawdź inne błędy
-        if "rate-limit reached" in error_msg or "login required" in error_msg:
-            raise Exception(
-                "Instagram wymaga autentykacji. Sprawdź czy:\n"
-                "1. Link jest prawidłowy i publiczny\n"
-                "2. Profil nie jest prywatny\n"
-                "3. Spróbuj ponownie za kilka minut (rate limit)\n"
-                f"Szczegóły błędu: {error_msg}"
-            )
-        else:
-            raise Exception(f"Błąd pobierania z Instagram: {error_msg}")
+    for i, opts in enumerate(attempts):
+        try:
+            return attempt_download(opts)
+        except Exception as e:
+            last_error = str(e)
+
+            # Jeśli to problem z cookies, przejdź do następnej próby
+            cookie_errors = [
+                "could not find chrome cookies database",
+                "cookiesfrombrowser",
+                "unsupported keyring",
+                "firefox cookies database"
+            ]
+
+            if any(error in last_error.lower() for error in cookie_errors):
+                continue  # Spróbuj następnej metody
+
+            # Jeśli to inne błędy, nie próbuj dalej
+            break
+
+    # Jeśli wszystkie próby się nie powiodły
+    if "rate-limit reached" in last_error or "login required" in last_error:
+        raise Exception(
+            "Instagram wymaga autentykacji. Sprawdź czy:\n"
+            "1. Link jest prawidłowy i publiczny\n"
+            "2. Profil nie jest prywatny\n"
+            "3. Spróbuj ponownie za kilka minut (rate limit)\n"
+            f"Szczegóły błędu: {last_error}"
+        )
+    else:
+        raise Exception(f"Błąd pobierania z Instagram: {last_error}")
 
 
 def is_instagram_url(url):
@@ -580,9 +675,13 @@ def process_multiple_images(image_files):
 
 @st.cache_resource
 def get_qdrant_client():
+    # Użyj ustawień z panelu użytkownika, jeśli dostępne
+    settings = get_settings()
+    url = settings.get("qdrant_url") or env.get("QDRANT_URL")
+    api_key = settings.get("qdrant_api_key") or env.get("QDRANT_API_KEY")
     return QdrantClient(
-        url=env["QDRANT_URL"],
-        api_key=env["QDRANT_API_KEY"],
+        url=url,
+        api_key=api_key,
     )
 
 
@@ -604,17 +703,29 @@ def assure_db_collection_exists():
 # PostgreSQL connection
 def get_postgres_connection():
     """Tworzy połączenie z PostgreSQL"""
-    if not all(key in env for key in ["POSTGRES_HOST", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"]):
+    # Użyj ustawień z panelu użytkownika, jeśli dostępne
+    settings = get_settings()
+
+    # Sprawdź czy wszystkie wymagane dane są dostępne
+    host = settings.get("postgres_host") or env.get("POSTGRES_HOST")
+    db = settings.get("postgres_db") or env.get("POSTGRES_DB")
+    user = settings.get("postgres_user") or env.get("POSTGRES_USER")
+    password = settings.get(
+        "postgres_password") or env.get("POSTGRES_PASSWORD")
+
+    if not all([host, db, user, password]):
         return None
 
     try:
         conn = psycopg2.connect(
-            host=env["POSTGRES_HOST"],
-            port=env.get("POSTGRES_PORT", "5432"),
-            database=env["POSTGRES_DB"],
-            user=env["POSTGRES_USER"],
-            password=env["POSTGRES_PASSWORD"],
-            sslmode=env.get("POSTGRES_SSLMODE", "require")
+            host=host,
+            port=settings.get("postgres_port") or env.get(
+                "POSTGRES_PORT", "5432"),
+            database=db,
+            user=user,
+            password=password,
+            sslmode=settings.get("postgres_sslmode") or env.get(
+                "POSTGRES_SSLMODE", "require")
         )
         return conn
     except Exception as e:
@@ -1556,19 +1667,16 @@ def check_password():
 # Sprawdź logowanie
 check_password()
 
-if not st.session_state.get("openai_api_key"):
-    if "OPENAI_API_KEY" in env:
-        st.session_state["openai_api_key"] = env["OPENAI_API_KEY"]
+# Sprawdź czy mamy klucz OpenAI z ustawień lub env
+settings = get_settings()
+openai_key = settings.get("openai_api_key") or env.get("OPENAI_API_KEY")
 
-    else:
-        st.info("Podaj API key OpenAI")
-        st.session_state["openai_api_key"] = st.text_input(
-            "API key OpenAI", type="password")
-        if st.session_state["openai_api_key"]:
-            st.rerun()
-
-if not st.session_state.get("openai_api_key"):
+if not openai_key:
+    st.info("⚠️ **Brak klucza OpenAI** - przejdź do zakładki '⚙️ Ustawienia' aby skonfigurować klucz API")
     st.stop()
+else:
+    # Ustaw klucz w session state dla kompatybilności wstecznej
+    st.session_state["openai_api_key"] = openai_key
 # Session state initialization
 if "note_audio_text" not in st.session_state:
     st.session_state["note_audio_bytes_md5"] = None
@@ -1848,7 +1956,7 @@ with add_tab:
 
         st.info("ℹ️ Obsługiwane: Reels, Posty z wideo, IGTV")
         st.warning(
-            "⚠️ **Uwaga:** Instagram może wymagać autentykacji. Upewnij się, że link jest publiczny i profil nie jest prywatny.")
+            "⚠️ **Uwaga:** Instagram może wymagać autentykacji. Aplikacja automatycznie próbuje różne metody pobierania (z cookies i bez). Upewnij się, że link jest publiczny i profil nie jest prywatny.")
 
         instagram_url = st.text_input(
             "🔗 URL do rolki/wideo Instagram",
@@ -1931,12 +2039,15 @@ with add_tab:
                     
                     To ograniczenie ze strony Instagram, nie aplikacji.
                     """)
-                elif "unsupported keyring" in error_msg or "cookiesfrombrowser" in error_msg:
+                elif ("unsupported keyring" in error_msg or "cookiesfrombrowser" in error_msg or
+                      "could not find chrome cookies database" in error_msg):
                     st.info("""
                     **🔧 Problem z cookies przeglądarki:**
                     
-                    Aplikacja automatycznie spróbowała pobrać cookies z przeglądarki, 
-                    ale napotkała problem. Spróbowała ponownie bez cookies.
+                    Aplikacja próbowała pobrać cookies z przeglądarki Chrome/Firefox, 
+                    ale napotkała problem z dostępem do bazy cookies. 
+                    
+                    Automatycznie spróbowała alternatywnych metod pobierania.
                     
                     Jeśli nadal masz problemy:
                     - Upewnij się, że link jest publiczny
@@ -2576,3 +2687,233 @@ with manage_categories_tab:
                                 if delete_category(cat_id):
                                     st.success("Kategoria usunięta!")
                                     st.rerun()
+
+
+# ===============================
+# ZAKŁADKA USTAWIENIA
+# ===============================
+
+with settings_tab:
+    st.subheader("⚙️ Panel użytkownika - Ustawienia")
+
+    # Pobierz aktualne ustawienia
+    settings = get_settings()
+
+    # Sekcja OpenAI
+    st.markdown("### 🤖 OpenAI API")
+    with st.expander("Konfiguracja OpenAI", expanded=False):
+        new_openai_key = st.text_input(
+            "Klucz API OpenAI",
+            value=settings["openai_api_key"],
+            type="password",
+            help="Twój klucz API z platformy OpenAI",
+            key="settings_openai_key"
+        )
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("🔍 Testuj połączenie", key="test_openai"):
+                if new_openai_key:
+                    with st.spinner("Testuję połączenie..."):
+                        success, message = test_openai_connection(
+                            new_openai_key)
+                        if success:
+                            st.success(message)
+                        else:
+                            st.error(message)
+                else:
+                    st.warning("Wprowadź klucz API")
+
+    # Sekcja Qdrant
+    st.markdown("### 🔍 Qdrant Vector Database")
+    with st.expander("Konfiguracja Qdrant", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            new_qdrant_url = st.text_input(
+                "URL Qdrant",
+                value=settings["qdrant_url"],
+                help="URL twojej instancji Qdrant",
+                key="settings_qdrant_url"
+            )
+        with col2:
+            new_qdrant_key = st.text_input(
+                "Klucz API Qdrant",
+                value=settings["qdrant_api_key"],
+                type="password",
+                help="Klucz API Qdrant",
+                key="settings_qdrant_key"
+            )
+
+        if st.button("🔍 Testuj połączenie Qdrant", key="test_qdrant"):
+            if new_qdrant_url and new_qdrant_key:
+                with st.spinner("Testuję połączenie z Qdrant..."):
+                    success, message = test_qdrant_connection(
+                        new_qdrant_url, new_qdrant_key)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+            else:
+                st.warning("Wprowadź URL i klucz API")
+
+    # Sekcja PostgreSQL
+    st.markdown("### 🐘 PostgreSQL Database")
+    with st.expander("Konfiguracja PostgreSQL", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            new_postgres_host = st.text_input(
+                "Host",
+                value=settings["postgres_host"],
+                help="Adres hosta PostgreSQL",
+                key="settings_postgres_host"
+            )
+            new_postgres_port = st.text_input(
+                "Port",
+                value=settings["postgres_port"],
+                help="Port PostgreSQL",
+                key="settings_postgres_port"
+            )
+            new_postgres_user = st.text_input(
+                "Użytkownik",
+                value=settings["postgres_user"],
+                help="Nazwa użytkownika",
+                key="settings_postgres_user"
+            )
+        with col2:
+            new_postgres_db = st.text_input(
+                "Baza danych",
+                value=settings["postgres_db"],
+                help="Nazwa bazy danych",
+                key="settings_postgres_db"
+            )
+            new_postgres_password = st.text_input(
+                "Hasło",
+                value=settings["postgres_password"],
+                type="password",
+                help="Hasło do bazy danych",
+                key="settings_postgres_password"
+            )
+            new_postgres_sslmode = st.selectbox(
+                "Tryb SSL",
+                options=["require", "disable", "allow", "prefer"],
+                index=["require", "disable", "allow", "prefer"].index(settings["postgres_sslmode"]) if settings["postgres_sslmode"] in [
+                    "require", "disable", "allow", "prefer"] else 0,
+                help="Tryb SSL dla połączenia",
+                key="settings_postgres_sslmode"
+            )
+
+        if st.button("🔍 Testuj połączenie PostgreSQL", key="test_postgres"):
+            if all([new_postgres_host, new_postgres_port, new_postgres_db, new_postgres_user, new_postgres_password]):
+                with st.spinner("Testuję połączenie z PostgreSQL..."):
+                    success, message = test_postgres_connection(
+                        new_postgres_host, new_postgres_port, new_postgres_db,
+                        new_postgres_user, new_postgres_password, new_postgres_sslmode
+                    )
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+            else:
+                st.warning("Wprowadź wszystkie wymagane pola")
+
+    # Sekcja DigitalOcean Spaces (opcjonalna)
+    st.markdown("### ☁️ DigitalOcean Spaces (opcjonalne)")
+    with st.expander("Konfiguracja DigitalOcean Spaces", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            new_do_key = st.text_input(
+                "Klucz dostępu",
+                value=settings["do_spaces_key"],
+                help="Klucz dostępu do Spaces",
+                key="settings_do_key"
+            )
+            new_do_region = st.text_input(
+                "Region",
+                value=settings["do_spaces_region"],
+                help="Region (np. fra1, nyc3)",
+                key="settings_do_region"
+            )
+        with col2:
+            new_do_secret = st.text_input(
+                "Klucz sekretny",
+                value=settings["do_spaces_secret"],
+                type="password",
+                help="Sekretny klucz dostępu",
+                key="settings_do_secret"
+            )
+            new_do_bucket = st.text_input(
+                "Nazwa bucketa",
+                value=settings["do_spaces_bucket"],
+                help="Nazwa bucketa w Spaces",
+                key="settings_do_bucket"
+            )
+
+    # Przyciski zarządzania
+    st.divider()
+
+    col_save, col_clear = st.columns([2, 1])
+
+    with col_save:
+        if st.button("💾 Zapisz wszystkie ustawienia", type="primary", key="save_all_settings"):
+            # Zbierz wszystkie nowe ustawienia
+            new_settings = {
+                "openai_api_key": new_openai_key,
+                "qdrant_url": new_qdrant_url,
+                "qdrant_api_key": new_qdrant_key,
+                "postgres_host": new_postgres_host,
+                "postgres_port": new_postgres_port,
+                "postgres_db": new_postgres_db,
+                "postgres_user": new_postgres_user,
+                "postgres_password": new_postgres_password,
+                "postgres_sslmode": new_postgres_sslmode,
+                "do_spaces_key": new_do_key,
+                "do_spaces_secret": new_do_secret,
+                "do_spaces_region": new_do_region,
+                "do_spaces_bucket": new_do_bucket,
+            }
+
+            save_settings(new_settings)
+            st.rerun()
+
+    with col_clear:
+        if st.button("🔄 Wyczyść cache", key="clear_cache", help="Czyści cache połączeń (użyj po zmianie ustawień)"):
+            # Wyczyść cache Streamlit
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.success("✅ Cache wyczyszczony!")
+            st.rerun()
+
+    # Informacje o aktualnym stanie
+    st.divider()
+    st.markdown("### 📊 Status połączeń")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("**OpenAI**")
+        if settings["openai_api_key"]:
+            st.success("✅ Klucz ustawiony")
+        else:
+            st.warning("⚠️ Brak klucza")
+
+    with col2:
+        st.markdown("**Qdrant**")
+        if settings["qdrant_url"] and settings["qdrant_api_key"]:
+            st.success("✅ Konfiguracja OK")
+        else:
+            st.warning("⚠️ Niekompletna konfiguracja")
+
+    with col3:
+        st.markdown("**PostgreSQL**")
+        if all([settings["postgres_host"], settings["postgres_db"], settings["postgres_user"], settings["postgres_password"]]):
+            st.success("✅ Konfiguracja OK")
+        else:
+            st.warning("⚠️ Niekompletna konfiguracja")
+
+    # Ostrzeżenie o zmianach
+    st.info("""
+    **ℹ️ Uwaga:** 
+    Zmiany w ustawieniach są zapisywane tylko dla obecnej sesji. 
+    Aby zapisać je trwale, skonfiguruj zmienne środowiskowe w pliku `.env` 
+    lub w sekcji Secrets na Streamlit Cloud.
+    """)
