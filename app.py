@@ -163,6 +163,10 @@ try:
         env["POSTGRES_PASSWORD"] = st.secrets["POSTGRES_PASSWORD"]
     if "POSTGRES_SSLMODE" in st.secrets:
         env["POSTGRES_SSLMODE"] = st.secrets["POSTGRES_SSLMODE"]
+    if "INSTAGRAM_USERNAME" in st.secrets:
+        env["INSTAGRAM_USERNAME"] = st.secrets["INSTAGRAM_USERNAME"]
+    if "INSTAGRAM_PASSWORD" in st.secrets:
+        env["INSTAGRAM_PASSWORD"] = st.secrets["INSTAGRAM_PASSWORD"]
 except StreamlitSecretNotFoundError:
     # secrets.toml nie istnieje, używamy tylko .env
     pass
@@ -530,17 +534,19 @@ def download_instagram_video(url):
     attempts = [
         # Próba 1: Bez cookies (najbardziej niezawodna)
         ydl_opts,
-        # Próba 2: Tylko Opera (dodana dla użytkowników Opery)
+        # Próba 2: Tylko Chrome (więcej prawdopodobne w środowisku cloud)
+        {**ydl_opts, 'cookiesfrombrowser': ('chrome',)},
+        # Próba 3: Tylko Firefox
+        {**ydl_opts, 'cookiesfrombrowser': ('firefox',)},
+        # Próba 4: Chrome + Firefox razem
+        {**ydl_opts, 'cookiesfrombrowser': ('chrome', 'firefox')},
+        # Próba 5: Tylko Opera (może nie działać w cloud)
         {**ydl_opts, 'cookiesfrombrowser': ('opera',)},
-        # Próba 3: Opera z dodatkowymi opcjami
+        # Próba 6: Opera z dodatkowymi opcjami
         {**ydl_opts, 'cookiesfrombrowser': ('opera',), 'extractor_args': {
             'instagram': {'webpage_url_basename': True}}},
-        # Próba 4: Tylko Chrome
-        {**ydl_opts, 'cookiesfrombrowser': ('chrome',)},
-        # Próba 5: Tylko Firefox
-        {**ydl_opts, 'cookiesfrombrowser': ('firefox',)},
-        # Próba 6: Opera jako pierwsza w grupie (backup)
-        {**ydl_opts, 'cookiesfrombrowser': ('opera', 'chrome', 'firefox')}
+        # Próba 7: Wszystkie przeglądarki razem (ostatnia opcja)
+        {**ydl_opts, 'cookiesfrombrowser': ('chrome', 'firefox', 'opera')}
     ]
 
     # Dodaj próby z logowaniem jeśli dane są dostępne
@@ -552,12 +558,16 @@ def download_instagram_video(url):
             'password': instagram_password,
         }
         attempts.extend([
-            # Próba 7: Logowanie bez cookies
+            # Próba z logowaniem bez cookies
             login_opts,
-            # Próba 8: Logowanie + cookies Opera
-            {**login_opts, 'cookiesfrombrowser': ('opera',)},
-            # Próba 9: Logowanie + cookies Chrome
+            # Próba z logowaniem + cookies Chrome (najpierw Chrome)
             {**login_opts, 'cookiesfrombrowser': ('chrome',)},
+            # Próba z logowaniem + cookies Firefox
+            {**login_opts, 'cookiesfrombrowser': ('firefox',)},
+            # Próba z logowaniem + cookies Chrome + Firefox
+            {**login_opts, 'cookiesfrombrowser': ('chrome', 'firefox')},
+            # Próba z logowaniem + cookies Opera (na końcu)
+            {**login_opts, 'cookiesfrombrowser': ('opera',)},
         ])
 
     last_error = None
@@ -578,6 +588,12 @@ def download_instagram_video(url):
                 "unsupported keyring",
                 "firefox cookies database",
                 "opera cookies database",
+                "/home/appuser/.config/opera",
+                "/.config/opera",
+                "opera cookies",
+                "chrome cookies",
+                "firefox cookies",
+                "cookies database",
                 "login required",
                 "rate-limit reached",
                 "not available"
@@ -2968,7 +2984,7 @@ with settings_tab:
     # Przyciski zarządzania
     st.divider()
 
-    col_save, col_clear = st.columns([2, 1])
+    col_save, col_clear, col_secrets = st.columns([2, 1, 1])
 
     with col_save:
         if st.button("💾 Zapisz wszystkie ustawienia", type="primary", key="save_all_settings"):
@@ -3001,6 +3017,66 @@ with settings_tab:
             st.cache_resource.clear()
             st.success("✅ Cache wyczyszczony!")
             st.rerun()
+
+    with col_secrets:
+        if st.button("📋 Generuj Secrets", key="generate_secrets", help="Generuje kod do wklejenia w Streamlit Cloud Secrets"):
+            st.session_state["show_secrets_code"] = True
+            st.rerun()
+
+    # Sekcja generowania kodu secrets
+    if st.session_state.get("show_secrets_code", False):
+        st.divider()
+        st.markdown("### 📋 Kod do Streamlit Cloud Secrets")
+
+        # Zbierz aktualne ustawienia (używając zmiennych z formularza)
+        secrets_data = {
+            "OPENAI_API_KEY": new_openai_key,
+            "QDRANT_URL": new_qdrant_url,
+            "QDRANT_API_KEY": new_qdrant_key,
+            "POSTGRES_HOST": new_postgres_host,
+            "POSTGRES_PORT": new_postgres_port,
+            "POSTGRES_DB": new_postgres_db,
+            "POSTGRES_USER": new_postgres_user,
+            "POSTGRES_PASSWORD": new_postgres_password,
+            "POSTGRES_SSLMODE": new_postgres_sslmode,
+            "DO_SPACES_KEY": new_do_key,
+            "DO_SPACES_SECRET": new_do_secret,
+            "DO_SPACES_REGION": new_do_region,
+            "DO_SPACES_BUCKET": new_do_bucket,
+            "INSTAGRAM_USERNAME": new_instagram_username,
+            "INSTAGRAM_PASSWORD": new_instagram_password,
+        }
+
+        # Generuj kod secrets (tylko wypełnione pola)
+        secrets_code = []
+        for key, value in secrets_data.items():
+            if value and value.strip():  # Tylko niepuste wartości
+                secrets_code.append(f'{key} = "{value}"')
+
+        if secrets_code:
+            secrets_text = "\n".join(secrets_code)
+
+            st.success(
+                "✅ Wygenerowano kod secrets na podstawie wypełnionych pól:")
+            st.code(secrets_text, language="toml")
+
+            st.markdown("""
+            **📌 Instrukcja:**
+            1. Skopiuj powyższy kod
+            2. Przejdź do swojej aplikacji na Streamlit Cloud
+            3. Otwórz **Settings → Secrets**
+            4. Wklej kod i zapisz zmiany
+            5. Uruchom ponownie aplikację
+            """)
+
+            if st.button("❌ Zamknij", key="close_secrets_code"):
+                st.session_state["show_secrets_code"] = False
+                st.rerun()
+        else:
+            st.warning("⚠️ Nie ma wypełnionych pól do wygenerowania secrets.")
+            if st.button("❌ Zamknij", key="close_secrets_code_empty"):
+                st.session_state["show_secrets_code"] = False
+                st.rerun()
 
     # Informacje o aktualnym stanie
     st.divider()
@@ -3040,6 +3116,17 @@ with settings_tab:
     st.info("""
     **ℹ️ Uwaga:** 
     Zmiany w ustawieniach są zapisywane tylko dla obecnej sesji. 
-    Aby zapisać je trwale, skonfiguruj zmienne środowiskowe w pliku `.env` 
-    lub w sekcji Secrets na Streamlit Cloud.
+    Aby zapisać je trwale:
+    
+    **Lokalnie:** Skonfiguruj zmienne środowiskowe w pliku `.env`:
+    ```
+    INSTAGRAM_USERNAME=twoja_nazwa_uzytkownika
+    INSTAGRAM_PASSWORD=twoje_haslo
+    ```
+    
+    **Streamlit Cloud:** Dodaj do Secrets w aplikacji:
+    ```
+    instagram_username: twoja_nazwa_uzytkownika
+    instagram_password: twoje_haslo
+    ```
     """)
