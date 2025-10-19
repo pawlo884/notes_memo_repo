@@ -399,18 +399,23 @@ def download_instagram_video(url):
         'no_warnings': True,
         'extract_flat': False,
         'outtmpl': '%(id)s.%(ext)s',
-        # Automatyczne pobieranie cookies
-        'cookiesfrombrowser': ['chrome', 'firefox', 'edge'],
         'sleep_requests': 1,  # Opóźnienie między requestami
         'sleep_interval': 1,  # Opóźnienie między pobraniami
     }
 
+    # Najpierw spróbuj z cookies z Chrome/Firefox
+    ydl_opts_with_cookies = ydl_opts.copy()
     try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            ydl_opts['outtmpl'] = os.path.join(temp_dir, '%(id)s.%(ext)s')
+        ydl_opts_with_cookies['cookiesfrombrowser'] = ['chrome', 'firefox']
+    except Exception:
+        pass
 
-            # Pobierz informacje i wideo
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    # Funkcja pomocnicza do pobierania
+    def attempt_download(opts):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            opts['outtmpl'] = os.path.join(temp_dir, '%(id)s.%(ext)s')
+
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
 
                 # Znajdź pobrany plik
@@ -438,8 +443,20 @@ def download_instagram_video(url):
                     'timestamp': info.get('timestamp', None)
                 }
 
+    try:
+        # Najpierw spróbuj z cookies
+        return attempt_download(ydl_opts_with_cookies)
     except Exception as e:
         error_msg = str(e)
+
+        # Jeśli błąd z keyring, spróbuj bez cookies
+        if "unsupported keyring" in error_msg or "cookiesfrombrowser" in error_msg:
+            try:
+                return attempt_download(ydl_opts)  # Bez cookies
+            except Exception as retry_e:
+                error_msg = str(retry_e)
+
+        # Sprawdź inne błędy
         if "rate-limit reached" in error_msg or "login required" in error_msg:
             raise Exception(
                 "Instagram wymaga autentykacji. Sprawdź czy:\n"
@@ -1913,6 +1930,18 @@ with add_tab:
                     4. **Spróbuj innego linku** - niektóre posty mogą być zablokowane
                     
                     To ograniczenie ze strony Instagram, nie aplikacji.
+                    """)
+                elif "unsupported keyring" in error_msg or "cookiesfrombrowser" in error_msg:
+                    st.info("""
+                    **🔧 Problem z cookies przeglądarki:**
+                    
+                    Aplikacja automatycznie spróbowała pobrać cookies z przeglądarki, 
+                    ale napotkała problem. Spróbowała ponownie bez cookies.
+                    
+                    Jeśli nadal masz problemy:
+                    - Upewnij się, że link jest publiczny
+                    - Profil nie może być prywatny  
+                    - Spróbuj innego linku
                     """)
                 else:
                     st.info("""
