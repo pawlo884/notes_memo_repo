@@ -14,6 +14,7 @@ import os
 import boto3
 from botocore.client import Config
 import uuid
+from supabase import create_client, Client
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import json
@@ -167,6 +168,12 @@ try:
         env["INSTAGRAM_USERNAME"] = st.secrets["INSTAGRAM_USERNAME"]
     if "INSTAGRAM_PASSWORD" in st.secrets:
         env["INSTAGRAM_PASSWORD"] = st.secrets["INSTAGRAM_PASSWORD"]
+    if "SUPABASE_URL" in st.secrets:
+        env["SUPABASE_URL"] = st.secrets["SUPABASE_URL"]
+    if "SUPABASE_KEY" in st.secrets:
+        env["SUPABASE_KEY"] = st.secrets["SUPABASE_KEY"]
+    if "SUPABASE_STORAGE_BUCKET" in st.secrets:
+        env["SUPABASE_STORAGE_BUCKET"] = st.secrets["SUPABASE_STORAGE_BUCKET"]
 except StreamlitSecretNotFoundError:
     # secrets.toml nie istnieje, używamy tylko .env
     pass
@@ -225,6 +232,9 @@ def get_settings():
             "do_spaces_bucket": env.get("DO_SPACES_BUCKET", ""),
             "instagram_username": env.get("INSTAGRAM_USERNAME", ""),
             "instagram_password": env.get("INSTAGRAM_PASSWORD", ""),
+            "supabase_url": env.get("SUPABASE_URL", ""),
+            "supabase_key": env.get("SUPABASE_KEY", ""),
+            "supabase_storage_bucket": env.get("SUPABASE_STORAGE_BUCKET", ""),
         }
     return st.session_state["settings"]
 
@@ -321,6 +331,25 @@ def get_spaces_client():
         return None
 
 
+@st.cache_resource
+def get_supabase_client():
+    """Tworzy klienta Supabase"""
+    settings = get_settings()
+
+    supabase_url = settings.get("supabase_url") or env.get("SUPABASE_URL")
+    supabase_key = settings.get("supabase_key") or env.get("SUPABASE_KEY")
+
+    if not all([supabase_url, supabase_key]):
+        return None
+
+    try:
+        supabase: Client = create_client(supabase_url, supabase_key)
+        return supabase
+    except Exception as e:
+        st.warning(f"⚠️ Supabase niedostępne: {str(e)}")
+        return None
+
+
 def upload_file_to_spaces(file_bytes, file_extension, content_type):
     """Uploaduje plik do DigitalOcean Spaces i zwraca URL"""
     spaces_client = get_spaces_client()
@@ -358,6 +387,52 @@ def upload_file_to_spaces(file_bytes, file_extension, content_type):
     except Exception as e:
         log_error(e, "upload do Spaces")
         return None
+
+
+def upload_file_to_supabase(file_bytes, file_extension, content_type):
+    """Uploaduje plik do Supabase Storage i zwraca URL"""
+    supabase = get_supabase_client()
+
+    if not supabase:
+        return None
+
+    settings = get_settings()
+    bucket_name = settings.get("supabase_storage_bucket") or env.get(
+        "SUPABASE_STORAGE_BUCKET", "notes")
+
+    # Generuj unikalną nazwę pliku
+    file_id = str(uuid.uuid4())
+    filename = f"app_note_v1/{file_id}.{file_extension}"
+
+    try:
+        # Upload do Supabase Storage
+        supabase.storage.from_(bucket_name).upload(
+            path=filename,
+            file=file_bytes,
+            file_options={"content-type": content_type}
+        )
+
+        # Zwróć publiczny URL
+        url_result = supabase.storage.from_(
+            bucket_name).get_public_url(filename)
+        return url_result
+    except Exception as e:
+        log_error(e, "upload do Supabase Storage")
+        return None
+
+
+def upload_file_to_storage(file_bytes, file_extension, content_type):
+    """Uploaduje plik do dostępnego storage (najpierw Supabase, potem DigitalOcean Spaces)"""
+    # Spróbuj najpierw Supabase Storage
+    supabase_url = upload_file_to_supabase(
+        file_bytes, file_extension, content_type)
+    if supabase_url:
+        return supabase_url
+
+    # Fallback do DigitalOcean Spaces
+    spaces_url = upload_file_to_spaces(
+        file_bytes, file_extension, content_type)
+    return spaces_url
 
 
 def get_file_from_spaces_url(url):
@@ -2242,11 +2317,11 @@ with add_tab:
     # Zapisz notatkę
     st.divider()
 
-    # Opcja zapisu pliku do Spaces
+    # Opcja zapisu pliku do storage
     save_media = False
-    if st.session_state.get("media_file_bytes") and get_spaces_client():
+    if st.session_state.get("media_file_bytes") and (get_supabase_client() or get_spaces_client()):
         save_media = st.checkbox(
-            "💾 Zapisz oryginalny plik audio/wideo w DigitalOcean Spaces",
+            "💾 Zapisz oryginalny plik audio/wideo w storage",
             value=True,
             help="Plik będzie dostępny do odtworzenia w przyszłości"
         )
@@ -2259,20 +2334,20 @@ with add_tab:
         media_url = None
         media_type = None
 
-        # Upload pliku do Spaces jeśli wybrano
+        # Upload pliku do storage jeśli wybrano
         if save_media and st.session_state.get("media_file_bytes"):
-            with st.spinner("Uploaduję plik do Spaces..."):
-                media_url = upload_file_to_spaces(
+            with st.spinner("Uploaduję plik do storage..."):
+                media_url = upload_file_to_storage(
                     st.session_state["media_file_bytes"],
                     st.session_state.get("media_file_extension", "mp3"),
                     st.session_state.get("media_content_type", "audio/mp3")
                 )
                 if media_url:
                     media_type = st.session_state.get("media_content_type")
-                    st.success("✅ Plik zapisany w Spaces")
+                    st.success("✅ Plik zapisany w storage")
                 else:
                     st.warning(
-                        "⚠️ Nie udało się zapisać pliku w Spaces, ale notatka zostanie zapisana bez załącznika")
+                        "⚠️ Nie udało się zapisać pliku w storage, ale notatka zostanie zapisana bez załącznika")
 
         # Zapisz notatkę do bazy
         add_note_to_db(
@@ -2861,31 +2936,36 @@ with settings_tab:
     # Sekcja PostgreSQL
     st.markdown("### 🐘 PostgreSQL Database")
     with st.expander("Konfiguracja PostgreSQL", expanded=False):
+        st.info("""
+        **💡 Obsługiwane bazy:** DigitalOcean PostgreSQL, Supabase, AWS RDS, lokalny PostgreSQL
+        
+        **Supabase:** Host: `db.xxxxx.supabase.co`, Port: `5432`, Database: `postgres`, User: `postgres`
+        """)
         col1, col2 = st.columns(2)
         with col1:
             new_postgres_host = st.text_input(
                 "Host",
                 value=settings["postgres_host"],
-                help="Adres hosta PostgreSQL",
+                help="Adres hosta PostgreSQL (Supabase: db.xxxxx.supabase.co)",
                 key="settings_postgres_host"
             )
             new_postgres_port = st.text_input(
                 "Port",
                 value=settings["postgres_port"],
-                help="Port PostgreSQL",
+                help="Port PostgreSQL (Supabase: 5432, DO: 25060)",
                 key="settings_postgres_port"
             )
             new_postgres_user = st.text_input(
                 "Użytkownik",
                 value=settings["postgres_user"],
-                help="Nazwa użytkownika",
+                help="Nazwa użytkownika (Supabase: postgres)",
                 key="settings_postgres_user"
             )
         with col2:
             new_postgres_db = st.text_input(
                 "Baza danych",
                 value=settings["postgres_db"],
-                help="Nazwa bazy danych",
+                help="Nazwa bazy danych (Supabase: postgres, DO: defaultdb)",
                 key="settings_postgres_db"
             )
             new_postgres_password = st.text_input(
@@ -2918,8 +2998,40 @@ with settings_tab:
             else:
                 st.warning("Wprowadź wszystkie wymagane pola")
 
+    # Sekcja Supabase Storage (opcjonalna)
+    st.markdown("### 🚀 Supabase Storage (opcjonalne)")
+    with st.expander("Konfiguracja Supabase Storage", expanded=False):
+        st.info("""
+        **💡 Supabase Storage** jest preferowanym rozwiązaniem dla plików audio/wideo.
+        Aplikacja automatycznie użyje Supabase Storage jeśli jest skonfigurowane, 
+        w przeciwnym razie będzie używać DigitalOcean Spaces.
+        """)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            new_supabase_url = st.text_input(
+                "URL Supabase",
+                value=settings["supabase_url"],
+                help="URL twojego projektu Supabase",
+                key="settings_supabase_url"
+            )
+            new_supabase_bucket = st.text_input(
+                "Nazwa bucketa Storage",
+                value=settings["supabase_storage_bucket"],
+                help="Nazwa bucketa w Supabase Storage (domyślnie: notes)",
+                key="settings_supabase_bucket"
+            )
+        with col2:
+            new_supabase_key = st.text_input(
+                "Klucz API Supabase",
+                value=settings["supabase_key"],
+                type="password",
+                help="Klucz API z dashboard Supabase",
+                key="settings_supabase_key"
+            )
+
     # Sekcja DigitalOcean Spaces (opcjonalna)
-    st.markdown("### ☁️ DigitalOcean Spaces (opcjonalne)")
+    st.markdown("### ☁️ DigitalOcean Spaces (opcjonalne - fallback)")
     with st.expander("Konfiguracja DigitalOcean Spaces", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
@@ -3003,6 +3115,9 @@ with settings_tab:
                 "do_spaces_secret": new_do_secret,
                 "do_spaces_region": new_do_region,
                 "do_spaces_bucket": new_do_bucket,
+                "supabase_url": new_supabase_url,
+                "supabase_key": new_supabase_key,
+                "supabase_storage_bucket": new_supabase_bucket,
                 "instagram_username": new_instagram_username,
                 "instagram_password": new_instagram_password,
             }
@@ -3043,6 +3158,9 @@ with settings_tab:
             "DO_SPACES_SECRET": new_do_secret,
             "DO_SPACES_REGION": new_do_region,
             "DO_SPACES_BUCKET": new_do_bucket,
+            "SUPABASE_URL": new_supabase_url,
+            "SUPABASE_KEY": new_supabase_key,
+            "SUPABASE_STORAGE_BUCKET": new_supabase_bucket,
             "INSTAGRAM_USERNAME": new_instagram_username,
             "INSTAGRAM_PASSWORD": new_instagram_password,
         }
@@ -3082,7 +3200,7 @@ with settings_tab:
     st.divider()
     st.markdown("### 📊 Status połączeń")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         st.markdown("**OpenAI**")
@@ -3106,6 +3224,13 @@ with settings_tab:
             st.warning("⚠️ Niekompletna konfiguracja")
 
     with col4:
+        st.markdown("**Supabase Storage**")
+        if settings["supabase_url"] and settings["supabase_key"]:
+            st.success("✅ Storage OK")
+        else:
+            st.warning("⚠️ Brak konfiguracji")
+
+    with col5:
         st.markdown("**Instagram**")
         if settings["instagram_username"] and settings["instagram_password"]:
             st.success("✅ Dane logowania OK")
