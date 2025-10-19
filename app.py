@@ -392,13 +392,17 @@ def download_instagram_video(url):
         }
     """
 
-    # Konfiguracja yt-dlp
+    # Konfiguracja yt-dlp z lepszymi opcjami dla Instagram
     ydl_opts = {
         'format': 'best',
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
         'outtmpl': '%(id)s.%(ext)s',
+        # Automatyczne pobieranie cookies
+        'cookiesfrombrowser': ['chrome', 'firefox', 'edge'],
+        'sleep_requests': 1,  # Opóźnienie między requestami
+        'sleep_interval': 1,  # Opóźnienie między pobraniami
     }
 
     try:
@@ -435,7 +439,17 @@ def download_instagram_video(url):
                 }
 
     except Exception as e:
-        raise Exception(f"Błąd pobierania z Instagram: {str(e)}")
+        error_msg = str(e)
+        if "rate-limit reached" in error_msg or "login required" in error_msg:
+            raise Exception(
+                "Instagram wymaga autentykacji. Sprawdź czy:\n"
+                "1. Link jest prawidłowy i publiczny\n"
+                "2. Profil nie jest prywatny\n"
+                "3. Spróbuj ponownie za kilka minut (rate limit)\n"
+                f"Szczegóły błędu: {error_msg}"
+            )
+        else:
+            raise Exception(f"Błąd pobierania z Instagram: {error_msg}")
 
 
 def is_instagram_url(url):
@@ -1816,6 +1830,8 @@ with add_tab:
         st.session_state["source_type"] = "instagram"
 
         st.info("ℹ️ Obsługiwane: Reels, Posty z wideo, IGTV")
+        st.warning(
+            "⚠️ **Uwaga:** Instagram może wymagać autentykacji. Upewnij się, że link jest publiczny i profil nie jest prywatny.")
 
         instagram_url = st.text_input(
             "🔗 URL do rolki/wideo Instagram",
@@ -1882,8 +1898,29 @@ with add_tab:
 
             except Exception as e:
                 st.error(f"❌ Błąd: {str(e)}")
-                st.info(
-                    "💡 Wskazówka: Upewnij się, że profil nie jest prywatny lub spróbuj innego linku")
+
+                # Dodatkowe wskazówki dla typowych błędów Instagram
+                error_msg = str(e)
+                if "login required" in error_msg or "rate-limit" in error_msg:
+                    st.warning("""
+                    **🔐 Problem z autentykacją Instagram:**
+                    
+                    Instagram wymaga teraz logowania dla niektórych treści. Aby to naprawić:
+                    
+                    1. **Upewnij się, że link jest publiczny** - prywatne profile nie działają
+                    2. **Spróbuj ponownie za kilka minut** - Instagram ma ograniczenia częstotliwości
+                    3. **Sprawdź czy profil jest aktywny** - nieaktywne konta mogą nie działać
+                    4. **Spróbuj innego linku** - niektóre posty mogą być zablokowane
+                    
+                    To ograniczenie ze strony Instagram, nie aplikacji.
+                    """)
+                else:
+                    st.info("""
+                    **💡 Wskazówki:**
+                    - Upewnij się, że link jest prawidłowy i publiczny
+                    - Profil nie może być prywatny
+                    - Spróbuj innego linku lub poczekaj chwilę
+                    """)
                 st.stop()
 
         # Wyświetl transkrypcję i pozwól na edycję
