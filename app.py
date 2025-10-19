@@ -219,6 +219,8 @@ def get_settings():
             "do_spaces_secret": env.get("DO_SPACES_SECRET", ""),
             "do_spaces_region": env.get("DO_SPACES_REGION", ""),
             "do_spaces_bucket": env.get("DO_SPACES_BUCKET", ""),
+            "instagram_username": env.get("INSTAGRAM_USERNAME", ""),
+            "instagram_password": env.get("INSTAGRAM_PASSWORD", ""),
         }
     return st.session_state["settings"]
 
@@ -475,6 +477,11 @@ def download_instagram_video(url):
         }
     """
 
+    # Pobierz ustawienia Instagram z session state
+    settings = get_settings()
+    instagram_username = settings.get("instagram_username", "")
+    instagram_password = settings.get("instagram_password", "")
+
     # Konfiguracja yt-dlp z lepszymi opcjami dla Instagram
     ydl_opts = {
         'format': 'best',
@@ -525,15 +532,36 @@ def download_instagram_video(url):
         ydl_opts,
         # Próba 2: Tylko Opera (dodana dla użytkowników Opery)
         {**ydl_opts, 'cookiesfrombrowser': ('opera',)},
-        # Próba 3: Tylko Chrome
+        # Próba 3: Opera z dodatkowymi opcjami
+        {**ydl_opts, 'cookiesfrombrowser': ('opera',), 'extractor_args': {
+            'instagram': {'webpage_url_basename': True}}},
+        # Próba 4: Tylko Chrome
         {**ydl_opts, 'cookiesfrombrowser': ('chrome',)},
-        # Próba 4: Tylko Firefox
+        # Próba 5: Tylko Firefox
         {**ydl_opts, 'cookiesfrombrowser': ('firefox',)},
-        # Próba 5: Opera jako pierwsza w grupie (backup)
+        # Próba 6: Opera jako pierwsza w grupie (backup)
         {**ydl_opts, 'cookiesfrombrowser': ('opera', 'chrome', 'firefox')}
     ]
 
+    # Dodaj próby z logowaniem jeśli dane są dostępne
+    if instagram_username and instagram_password:
+        # Próby z logowaniem (na końcu, po cookies)
+        login_opts = {
+            **ydl_opts,
+            'username': instagram_username,
+            'password': instagram_password,
+        }
+        attempts.extend([
+            # Próba 7: Logowanie bez cookies
+            login_opts,
+            # Próba 8: Logowanie + cookies Opera
+            {**login_opts, 'cookiesfrombrowser': ('opera',)},
+            # Próba 9: Logowanie + cookies Chrome
+            {**login_opts, 'cookiesfrombrowser': ('chrome',)},
+        ])
+
     last_error = None
+    cookie_attempts_failed = 0
 
     for opts in attempts:
         try:
@@ -541,7 +569,7 @@ def download_instagram_video(url):
         except Exception as e:
             last_error = str(e)
 
-            # Jeśli to problem z cookies, przejdź do następnej próby
+            # Jeśli to problem z cookies lub autentykacją, spróbuj następnej metody
             cookie_errors = [
                 "could not find chrome cookies database",
                 "could not find opera cookies database",
@@ -549,22 +577,54 @@ def download_instagram_video(url):
                 "cookiesfrombrowser",
                 "unsupported keyring",
                 "firefox cookies database",
-                "opera cookies database"
+                "opera cookies database",
+                "login required",
+                "rate-limit reached",
+                "not available"
             ]
 
+            # Sprawdź czy to błąd związany z cookies/autentykacją
             if any(error in last_error.lower() for error in cookie_errors):
-                continue  # Spróbuj następnej metody
+                cookie_attempts_failed += 1
+                # Nie kończ na ostatniej próbie
+                if cookie_attempts_failed < len(attempts) - 1:
+                    continue
 
             # Jeśli to inne błędy, nie próbuj dalej
             break
 
     # Jeśli wszystkie próby się nie powiodły
-    if "rate-limit reached" in last_error or "login required" in last_error:
+    if "rate-limit reached" in last_error or "login required" in last_error or "not available" in last_error:
+        # Sprawdź ile prób zostało wykonanych
+        attempts_info = ""
+        methods_tried = ["bez cookies", "z cookies Opery/Chrome/Firefox"]
+
+        if instagram_username and instagram_password:
+            methods_tried.append("z logowaniem")
+
+        if cookie_attempts_failed > 0:
+            attempts_info = f"\n\n🔧 Aplikacja wypróbowała {len(attempts)} różnych metod pobierania ({', '.join(methods_tried)}), ale Instagram nadal wymaga autentykacji."
+
+        suggestions = [
+            "1. Link jest prawidłowy i publiczny",
+            "2. Profil nie jest prywatny",
+            "3. Spróbuj ponownie za kilka minut (rate limit)"
+        ]
+
+        if instagram_username and instagram_password:
+            suggestions.append(
+                "4. Sprawdź czy dane logowania do Instagrama są prawidłowe w ustawieniach")
+            suggestions.append(
+                "5. Upewnij się, że konto nie wymaga weryfikacji dwuetapowej")
+        else:
+            suggestions.append(
+                "4. Skonfiguruj dane logowania do Instagrama w panelu ustawień")
+            suggestions.append(
+                "5. Upewnij się, że masz aktywne konto na Instagram i jesteś zalogowany w przeglądarce Opera")
+
         raise Exception(
-            "Instagram wymaga autentykacji. Sprawdź czy:\n"
-            "1. Link jest prawidłowy i publiczny\n"
-            "2. Profil nie jest prywatny\n"
-            "3. Spróbuj ponownie za kilka minut (rate limit)\n"
+            "Instagram wymaga autentykacji.\n" + "\n".join(suggestions) +
+            f"{attempts_info}\n\n"
             f"Szczegóły błędu: {last_error}"
         )
     else:
@@ -1962,8 +2022,21 @@ with add_tab:
         st.session_state["source_type"] = "instagram"
 
         st.info("ℹ️ Obsługiwane: Reels, Posty z wideo, IGTV")
-        st.warning(
-            "⚠️ **Uwaga:** Instagram może wymagać autentykacji. Aplikacja automatycznie próbuje różne metody pobierania (bez cookies, z cookies Opery/Chrome/Firefox). Upewnij się, że link jest publiczny i profil nie jest prywatny.")
+
+        # Sprawdź czy użytkownik ma skonfigurowane dane logowania
+        settings = get_settings()
+        has_instagram_creds = bool(settings.get(
+            "instagram_username") and settings.get("instagram_password"))
+
+        if has_instagram_creds:
+            st.success(
+                "✅ **Dane logowania do Instagrama skonfigurowane** - aplikacja będzie próbować logowania jeśli potrzeba")
+            st.warning(
+                "⚠️ **Uwaga:** Instagram może wymagać autentykacji. Aplikacja automatycznie próbuje różne metody pobierania (bez cookies, z cookies Opery/Chrome/Firefox, oraz z logowaniem). Upewnij się, że link jest publiczny i profil nie jest prywatny.")
+        else:
+            st.warning(
+                "⚠️ **Uwaga:** Instagram może wymagać autentykacji. Aplikacja automatycznie próbuje różne metody pobierania (bez cookies, z cookies Opery/Chrome/Firefox).")
+            st.info("💡 **Wskazówka:** Jeśli pobieranie się nie powodzi, możesz skonfigurować dane logowania do Instagrama w panelu ustawień, aby zwiększyć szanse powodzenia.")
 
         instagram_url = st.text_input(
             "🔗 URL do rolki/wideo Instagram",
@@ -2861,6 +2934,37 @@ with settings_tab:
                 key="settings_do_bucket"
             )
 
+    # Sekcja Instagram (opcjonalna)
+    st.markdown("### 📱 Instagram (opcjonalne)")
+    with st.expander("Konfiguracja Instagram", expanded=False):
+        st.info("""
+        **ℹ️ Informacja o bezpieczeństwie:** 
+        Dane logowania do Instagrama są przechowywane tylko lokalnie w sesji i NIE są zapisywane trwale.
+        Używaj tylko wtedy, gdy cookies z przeglądarki nie działają poprawnie.
+        """)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            new_instagram_username = st.text_input(
+                "Nazwa użytkownika Instagram",
+                value=settings["instagram_username"],
+                help="Twoja nazwa użytkownika na Instagramie",
+                key="settings_instagram_username"
+            )
+        with col2:
+            new_instagram_password = st.text_input(
+                "Hasło Instagram",
+                value=settings["instagram_password"],
+                type="password",
+                help="Hasło do konta Instagram (opcjonalne)",
+                key="settings_instagram_password"
+            )
+
+        if new_instagram_username and new_instagram_password:
+            st.success("✅ Dane logowania do Instagrama zostały ustawione")
+            st.warning(
+                "⚠️ Uwaga: Logowanie może wymagać weryfikacji dwuetapowej lub może nie działać z powodu zabezpieczeń Instagrama.")
+
     # Przyciski zarządzania
     st.divider()
 
@@ -2883,6 +2987,8 @@ with settings_tab:
                 "do_spaces_secret": new_do_secret,
                 "do_spaces_region": new_do_region,
                 "do_spaces_bucket": new_do_bucket,
+                "instagram_username": new_instagram_username,
+                "instagram_password": new_instagram_password,
             }
 
             save_settings(new_settings)
@@ -2900,7 +3006,7 @@ with settings_tab:
     st.divider()
     st.markdown("### 📊 Status połączeń")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.markdown("**OpenAI**")
@@ -2922,6 +3028,13 @@ with settings_tab:
             st.success("✅ Konfiguracja OK")
         else:
             st.warning("⚠️ Niekompletna konfiguracja")
+
+    with col4:
+        st.markdown("**Instagram**")
+        if settings["instagram_username"] and settings["instagram_password"]:
+            st.success("✅ Dane logowania OK")
+        else:
+            st.warning("⚠️ Brak danych logowania")
 
     # Ostrzeżenie o zmianach
     st.info("""
