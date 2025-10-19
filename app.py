@@ -523,15 +523,19 @@ def download_instagram_video(url):
     attempts = [
         # Próba 1: Bez cookies (najbardziej niezawodna)
         ydl_opts,
-        # Próba 2: Tylko Chrome
+        # Próba 2: Tylko Opera (dodana dla użytkowników Opery)
+        {**ydl_opts, 'cookiesfrombrowser': ('opera',)},
+        # Próba 3: Tylko Chrome
         {**ydl_opts, 'cookiesfrombrowser': ('chrome',)},
-        # Próba 3: Tylko Firefox
-        {**ydl_opts, 'cookiesfrombrowser': ('firefox',)}
+        # Próba 4: Tylko Firefox
+        {**ydl_opts, 'cookiesfrombrowser': ('firefox',)},
+        # Próba 5: Opera jako pierwsza w grupie (backup)
+        {**ydl_opts, 'cookiesfrombrowser': ('opera', 'chrome', 'firefox')}
     ]
 
     last_error = None
 
-    for i, opts in enumerate(attempts):
+    for opts in attempts:
         try:
             return attempt_download(opts)
         except Exception as e:
@@ -540,9 +544,12 @@ def download_instagram_video(url):
             # Jeśli to problem z cookies, przejdź do następnej próby
             cookie_errors = [
                 "could not find chrome cookies database",
+                "could not find opera cookies database",
+                "could not find firefox cookies database",
                 "cookiesfrombrowser",
                 "unsupported keyring",
-                "firefox cookies database"
+                "firefox cookies database",
+                "opera cookies database"
             ]
 
             if any(error in last_error.lower() for error in cookie_errors):
@@ -1956,7 +1963,7 @@ with add_tab:
 
         st.info("ℹ️ Obsługiwane: Reels, Posty z wideo, IGTV")
         st.warning(
-            "⚠️ **Uwaga:** Instagram może wymagać autentykacji. Aplikacja automatycznie próbuje różne metody pobierania (z cookies i bez). Upewnij się, że link jest publiczny i profil nie jest prywatny.")
+            "⚠️ **Uwaga:** Instagram może wymagać autentykacji. Aplikacja automatycznie próbuje różne metody pobierania (bez cookies, z cookies Opery/Chrome/Firefox). Upewnij się, że link jest publiczny i profil nie jest prywatny.")
 
         instagram_url = st.text_input(
             "🔗 URL do rolki/wideo Instagram",
@@ -2040,14 +2047,20 @@ with add_tab:
                     To ograniczenie ze strony Instagram, nie aplikacji.
                     """)
                 elif ("unsupported keyring" in error_msg or "cookiesfrombrowser" in error_msg or
-                      "could not find chrome cookies database" in error_msg):
+                      "could not find chrome cookies database" in error_msg or
+                      "could not find opera cookies database" in error_msg or
+                      "could not find firefox cookies database" in error_msg):
                     st.info("""
                     **🔧 Problem z cookies przeglądarki:**
                     
-                    Aplikacja próbowała pobrać cookies z przeglądarki Chrome/Firefox, 
+                    Aplikacja próbowała pobrać cookies z przeglądarki (Opera/Chrome/Firefox), 
                     ale napotkała problem z dostępem do bazy cookies. 
                     
-                    Automatycznie spróbowała alternatywnych metod pobierania.
+                    Automatycznie spróbowała alternatywnych metod pobierania w kolejności:
+                    1. Bez cookies (najbardziej niezawodne)
+                    2. Cookies z Opery
+                    3. Cookies z Chrome
+                    4. Cookies z Firefox
                     
                     Jeśli nadal masz problemy:
                     - Upewnij się, że link jest publiczny
